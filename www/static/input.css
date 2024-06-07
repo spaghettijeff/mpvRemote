@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    @font-face {
+        font-family: 'Material Symbols Outlined';
+        font-style: normal;
+        src: url(symbols/material-symbols.woff2) format('woff2');
+    }
+
+}
+
+@layer components {
+    .material-symbols-outlined {
+        font-family: 'Material Symbols Outlined';
+        font-weight: normal;
+        font-style: normal;
+        font-size: 24px;  /* Preferred icon size */
+        display: inline-block;
+        line-height: 1;
+        text-transform: none;
+        letter-spacing: normal;
+        word-wrap: normal;
+        white-space: nowrap;
+        direction: ltr;
+    }
+
+    .material-symbols-outlined.md-60 {
+        font-size: 42px;
+    }
+
+    .material-symbols-outlined.md-32 {
+        font-size: 32px;
+    }
+    #tabs nav a.selected {
+        @apply bg-gray-300 dark:bg-gray-700
+    }
+}
