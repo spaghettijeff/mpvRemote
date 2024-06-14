@@ -59,7 +59,7 @@ M.create = function(cqueue, host, port)
             files = utils.readdir(utils.getcwd() .. '/' .. (path_tail or ""), "files")
             response_headers:append(":status", "200")
             response_headers:append("Content-Type", "application/json")
-            assert(stream:write_headers(res_headers, false))
+            assert(stream:write_headers(response_headers, false))
             assert(stream:write_body_from_string(utils.format_json{files = files or {}, dirs = dirs or {}}))
         end;
     };
