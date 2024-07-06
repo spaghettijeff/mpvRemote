@@ -140,7 +140,7 @@
                         <input id="play-url" class="w-11/12 mx-4 my-4 bg-transparent border-0 border-b-4 dark:border-neutral-600 border-gray-200 focus:border-cyan-600 dark:focus:border-cyan-900 ring-0 focus:ring-0 focus:outline-none"
                         type="url" placeholder="URL"></input>
                         <button class="font-semibold p-1 border-gray-200 dark:border-neutral-700 border-2 bg-transparent active:bg-gray-200 dark:active:bg-neutral-700 rounded-full px-8 flex-initial"
-                            onclick="socket.send({ event: window.location.hash.substr(1), data: { url: document.querySelector('#play-url').value }})">
+                            onclick="socket.send({ event: window.location.hash.substr(1), data: { url: document.querySelector('#play-url').value }}); ui['file-picker'] = false">
                             Play URL
                         </button>
                     </div>
