@@ -1,0 +1,12 @@
+[package]
+name = "mpv-remote"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "mpv_remote"
+crate-type = ["cdylib"]
+
+[dependencies]
+mpv-client = "1.0.1"
+tokio = "1.44.0"
