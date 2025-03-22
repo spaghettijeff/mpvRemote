@@ -1,4 +1,5 @@
 mod server;
+mod websocket;
 
 use mpv_client::{mpv_handle, Event, Handle};
 use std::thread;

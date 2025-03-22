@@ -4,17 +4,33 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 
+const index_html: &[u8] = include_bytes!("../www/index.html");
+const main_js: &[u8] = include_bytes!("../www/static/main.js");
+const output_css: &[u8] = include_bytes!("../www/static/output.css");
+const symbols_font: &[u8] = include_bytes!("../www/static/symbols/material-symbols.woff2");
+
+macro_rules! continue_on_err {
+    ($expression:expr) => {
+        match $expression {
+            Ok(val) => val,
+            Err(e) => { println!("Error:\t{e:#?}"); continue; },
+        }
+    };
+}
+
 #[derive(Debug)]
-pub struct Request {
+pub struct Request<'a, T: std::io::Read> {
     method: Method,
     path: String,
     ver: String,
     headers: HashMap<String, String>,
-    body: Option<String>,
+    body: Option<&'a T>,
 }
 
-impl Request {
-    fn parse(mut lines: BufReader<&TcpStream>) -> Result<Request, io::Error> {
+impl<'a, T: std::io::Read> Request<'a, T> where
+    &'a T: std::io::Read {
+    fn parse(stream: &'a T) -> Result<Request<T>, io::Error> {
+        let mut lines = BufReader::new(stream);
         let mut buf = String::new();
         let first_line  = match lines.read_line(&mut buf) {
             Ok(0) => { return Err(io::Error::new(io::ErrorKind::Other, "unexpected EOF in http request")) },
@@ -41,13 +57,7 @@ impl Request {
         }
         buf.clear();
         let body = match headers.get("Content-Length") {
-            Some(content_len) => {
-                let content_len = content_len.parse::<usize>().map_err(|e| { io::Error::new(io::ErrorKind::Other, e.to_string()) })?;
-                let mut buf = vec![0u8; content_len];
-                lines.read_exact(&mut buf)?;
-                let s = str::from_utf8(&buf).map_err(|e| { io::Error::new(io::ErrorKind::Other, e.to_string()) })?;
-                Some(s.to_string())
-            },
+            Some(_) => Some(stream),
             None => None,
         };
         Ok(Request { 
@@ -92,65 +102,72 @@ impl TryFrom<&str> for Method {
     }
 }
 
-
-pub fn bind_and_listen() -> Result<(), io::Error>{
-    let listener = TcpListener::bind("0.0.0.0:8080")?;
-    for stream in listener.incoming() {
-        match stream {
-            Err(e) => {
-                println!("Error:\t{e:#?}");
-            },
-            Ok(mut stream) => {
-                let reader = io::BufReader::new(&stream);
-                let request = Request::parse(reader);
-                println!("{request:#?}");
-                let r = Response::new("HTTP/1.1".into(), 200)
-                    .header("Content-Type".into(), "text/text".into())
-                    .body("penis".into());
-                let r = r.to_string();
-                println!("{r}");
-                stream.write_all(r.as_bytes())?
-            },
-        }
-    }
-    return Ok(())
-}
-
-struct Response{ //TODO change the Strings to &str probably?
+pub struct Response<'a> {
     version: String,
     status: u16,
     headers: Vec<(String, String)>,
-    body: Option<String>,
+    body: Option<&'a [u8]>,
 }
 
-impl ToString for Response {
-    fn to_string(&self) -> String {
-        let mut resp = format!("{} {}\n", self.version, self.status).to_string();
-        self.headers.iter().for_each(|item| { 
-            resp += format!("{}: {}\n", item.0, item.1).as_str();
-        });
-        resp += "\r\n";
-        if let Some(body) = &self.body {
-            resp += body;
-        }
-        resp
-    }
-}
-
-impl Response {
-    fn new(version: String, status: u16) -> Response {
+impl<'a> Response<'a> {
+    fn new(version: String, status: u16) -> Response<'a> {
         Response { version , status, headers: Vec::new(), body: None }
     }
 
-    fn header(mut self, key: String, value: String) -> Response {
+    fn header(mut self, key: String, value: String) -> Response<'a> {
         self.headers.push((key, value));
         self
     }
 
-    fn body(mut self, body: String) -> Response {
+    fn body(mut self, body: &'a[u8]) -> Response {
         self.body = Some(body);
         self
     }
+
+    fn bytes(self) -> Vec<u8> {
+        let mut header = format!("{} {}\n", self.version, self.status).to_string();
+        self.headers.iter().for_each(|item| { 
+            header += format!("{}: {}\n", item.0, item.1).as_str();
+        });
+        header += "\r\n";
+        let header = header.as_bytes();
+        if let Some(body) = self.body {
+            [header, body].concat()
+        } else {
+            header.to_owned()
+        }
+    }
 }
 
+pub fn bind_and_listen() -> Result<(), io::Error>{
+    let listener = TcpListener::bind("0.0.0.0:8080")?;
+    for stream in listener.incoming() {
+        let mut stream = continue_on_err!(stream);
+        let request = continue_on_err!(Request::parse(&stream));
+        println!("{request:#?}");
+
+        let response = handle_request(request);
+        continue_on_err!(stream.write_all(&response.bytes()));
+    }
+    Ok(())
+}
+
+fn handle_request<T: std::io::Read>(request: Request<T>) -> Response {
+    match request.path.as_str() {
+        "/" => Response::new("HTTP/1.1".into(), 200)
+            .header("Content-Type".into(), "text/html".into())
+            .body(index_html),
+        "/static/main.js" => Response::new("HTTP/1.1".into(), 200)
+            .header("Content-Type".into(), "text/javascript".into())
+            .body(main_js),
+        "/static/output.css" => Response::new("HTTP/1.1".into(), 200)
+            .header("Content-Type".into(), "text/css".into())
+            .body(output_css),
+        "/static/symbols/material-symbols.woff2" => Response::new("HTTP/1.1".into(), 200)
+            .header("Content-Type".into(), "font/woff2".into())
+            .body(symbols_font),
+        _path => Response::new("HTTP/1.1".into(), 404)
+            .header("Content-Type".into(), "text/html".into()),
+    }
+}
 

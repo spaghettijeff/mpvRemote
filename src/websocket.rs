@@ -76,7 +76,7 @@ impl<'a, T: Read> Read for Frame<'a, T> {
 }
 
 impl<'a, T: Read> Frame<'a, T> {
-    fn parse(stream: &'a mut T) -> Result<Frame<'a, T>, io::Error> {
+    fn deserialize(stream: &'a mut T) -> Result<Frame<'a, T>, io::Error> {
         let mut buffer = [0; 8];
         stream.take(2).read(&mut buffer)?;
         let fin: bool = (0b10000000 & buffer[0]) != 0;
@@ -142,39 +142,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_frame_tcp_stream() {
-        const ADDR: &str = "127.0.0.1:9898";
-        let listener = std::net::TcpListener::bind(ADDR).unwrap();
-        let th = std::thread::spawn(move || {
-            let mut sender = std::net::TcpStream::connect(ADDR).unwrap();
-            let _ = sender.write(&[1, 2, 3, 4, 5]);
-            let _ = sender.flush();
-        });
-        let mut stream = listener.incoming().next().unwrap().unwrap();
-        let mut frame = Frame{
-            fin: true,
-            opcode: OpCode::Text,
-            mask: false,
-            payload_len: 16,
-            masking_key: None,
-            payload: &mut stream,
-        };
-        let mut buf = [0; 5];
-        frame.read(&mut buf).unwrap();
-        assert_eq!(buf, [1, 2, 3, 4, 5]);
-
-        let _ = th.join();
-    }
-
-    #[test]
-    fn test_frame_parse() {
+    fn frame_deserialize() {
         let frame_bin = vec![
             0b10000010, // fin = 1, opcode = 2 (binary)
             0b00000100, // mask = 0, payload_len = 4
             1, 2, 3, 4, // payload
         ];
         let mut data = std::io::Cursor::new(frame_bin);
-        let frame = Frame::parse(&mut data).unwrap();
+        let frame = Frame::deserialize(&mut data).unwrap();
         assert!(frame.fin == true);
         assert!(frame.opcode == OpCode::Binary);
         assert!(frame.mask == false);
@@ -183,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_serialize() {
+    fn frame_serialize() {
         let s = "hello world";
         let mut payload = Cursor::new(s);
         let mut frame = Frame{
@@ -195,10 +170,70 @@ mod tests {
             payload: &mut payload,
         };
         let mut buf = Vec::new();
-        frame.serialize().read_to_end(&mut buf);
+        frame.serialize().read_to_end(&mut buf).unwrap();
         println!("{:#?}", buf);
         let mut r = Cursor::new(buf);
-        let f = Frame::parse(&mut r).unwrap();
+        let f = Frame::deserialize(&mut r).unwrap();
         println!("{:#?}", f);
+    }
+
+    #[test]
+    fn frame_tcp_stream_no_mask() {
+        const ADDR: &str = "127.0.0.1:9898";
+        const PAYLOAD_STR: &str = "test payload";
+        let listener = std::net::TcpListener::bind(ADDR).unwrap();
+        let th = std::thread::spawn(move || {
+            let mut payload = Cursor::new(PAYLOAD_STR);
+            let mut send_frame = Frame{
+                fin: true,
+                opcode: OpCode::Text,
+                mask: false,
+                payload_len: PAYLOAD_STR.len(),
+                masking_key: None,
+                payload: &mut payload,
+            };
+            let mut f = send_frame.serialize();
+            let mut sender = std::net::TcpStream::connect(ADDR).unwrap();
+            io::copy(&mut f, &mut sender).unwrap();
+        });
+        let mut stream = listener.incoming().next().unwrap().unwrap();
+        let mut out_frame = Frame::deserialize(&mut stream).unwrap();
+        println!("{:#?}", out_frame);
+        let mut buf = String::new();
+        let n = out_frame.read_to_string(&mut buf).unwrap();
+        println!("Read {n} bytes:\t{buf}");
+        assert_eq!(buf, PAYLOAD_STR);
+
+        let _ = th.join();
+    }
+
+    #[test]
+    fn frame_tcp_stream_mask() {
+        const ADDR: &str = "127.0.0.1:9899";
+        const PAYLOAD_STR: &str = "test payload";
+        let listener = std::net::TcpListener::bind(ADDR).unwrap();
+        let th = std::thread::spawn(move || {
+            let mut payload = Cursor::new(PAYLOAD_STR);
+            let mut send_frame = Frame{
+                fin: true,
+                opcode: OpCode::Text,
+                mask: true,
+                payload_len: PAYLOAD_STR.len(),
+                masking_key: Some(0xa3ff0792 as u32), // 100% genuine random mask
+                payload: &mut payload,
+            };
+            let mut f = send_frame.serialize();
+            let mut sender = std::net::TcpStream::connect(ADDR).unwrap();
+            io::copy(&mut f, &mut sender).unwrap();
+        });
+        let mut stream = listener.incoming().next().unwrap().unwrap();
+        let mut out_frame = Frame::deserialize(&mut stream).unwrap();
+        println!("{:#?}", out_frame);
+        let mut buf = String::new();
+        let n = out_frame.read_to_string(&mut buf).unwrap();
+        println!("Read {n} bytes:\t{buf}");
+        assert_eq!(buf, PAYLOAD_STR);
+
+        let _ = th.join();
     }
 }
