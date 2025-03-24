@@ -8,17 +8,17 @@ pub enum WebSocket<T: Read + Write> {
 }
 
 impl<T: Read + Write> WebSocket<T> {
-    fn read_message(&self) -> Message {
+    fn read_message(&self) -> Message<T> {
         todo!()
     }
-    fn write_message(&self, msg: Message) -> () {
+    fn write_message(&self, msg: Message<T>) -> () {
         todo!()
     }
 }
 
-pub enum Message {
-    Text,
-    Bytes,
+pub enum Message<'a, T: Read> {
+    Text(Frame<'a, T>),
+    Bytes(Frame<'a, T>),
 }
 
 #[repr(u8)]
@@ -51,7 +51,6 @@ impl TryFrom<u8> for OpCode {
 struct Frame<'a, T> {
     fin: bool,
     opcode: OpCode,
-    mask: bool, // TODO remove this in favor of key option
     payload_len: usize,
     masking_key: Option<u32>,
     payload: &'a mut T,
@@ -59,18 +58,18 @@ struct Frame<'a, T> {
 
 impl<'a, T: Read> Read for Frame<'a, T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.mask {
-            let read_result = (*self.payload).read(buf)?;
+        match self.masking_key {
+            Some(mask) => {
             let mask = unsafe {
-                std::mem::transmute::<u32, [u8; 4]>
-                    (self.masking_key.unwrap()) // panic if mask is true but key is none
+                std::mem::transmute::<u32, [u8; 4]>(mask)
             };
+            let read_result = (*self.payload).read(buf)?;
             for i in 0..read_result {
                 buf[i] = buf[i] ^ mask[i % 4];
             }
             Ok(read_result)
-        } else {
-            (*self.payload).read(buf)
+            },
+            None => (*self.payload).read(buf),
         }
     }
 }
@@ -104,7 +103,6 @@ impl<'a, T: Read> Frame<'a, T> {
         Ok(Frame{
             fin,
             opcode,
-            mask,
             payload_len,
             masking_key,
             payload: stream,
@@ -112,20 +110,21 @@ impl<'a, T: Read> Frame<'a, T> {
     }
 
     fn serialize(&'a mut self) -> std::io::Chain<Cursor<Vec<u8>>, &'a mut Self> {
+        let mask = matches!(self.masking_key, Some(_));
         let mut header_bytes: Vec<u8> = Vec::new();
         let byte_1 = if self.fin { 0b10000000 } else { 0 } | self.opcode as u8;
         header_bytes.push(byte_1);
 
         if self.payload_len <= 125 { // 7 bit payload length
-            let byte = if self.mask { 0b10000000 } else { 0 } | self.payload_len as u8;
+            let byte = if mask { 0b10000000 } else { 0 } | self.payload_len as u8;
             header_bytes.push(byte);
         } else if self.payload_len <= u16::MAX as usize { // 16 bit payload length
-            let byte = if self.mask { 0b10000000 } else { 0 } | 126 as u8;
+            let byte = if mask { 0b10000000 } else { 0 } | 126 as u8;
             header_bytes.push(byte);
             header_bytes.write_u16::<NetworkEndian>(self.payload_len as u16).unwrap();
 
         } else { // 64 bit payload length
-            let byte = if self.mask { 0b10000000 } else { 0 } | 127 as u8;
+            let byte = if mask { 0b10000000 } else { 0 } | 127 as u8;
             header_bytes.push(byte);
             header_bytes.write_u64::<NetworkEndian>(self.payload_len as u64).unwrap();
         }
@@ -152,7 +151,6 @@ mod tests {
         let frame = Frame::deserialize(&mut data).unwrap();
         assert!(frame.fin == true);
         assert!(frame.opcode == OpCode::Binary);
-        assert!(frame.mask == false);
         assert!(frame.masking_key == None);
         assert!(frame.payload_len == 4);
     }
@@ -164,7 +162,6 @@ mod tests {
         let mut frame = Frame{
             fin: true,
             opcode: OpCode::Text,
-            mask: false,
             payload_len: s.len(),
             masking_key: None,
             payload: &mut payload,
@@ -187,7 +184,6 @@ mod tests {
             let mut send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
-                mask: false,
                 payload_len: PAYLOAD_STR.len(),
                 masking_key: None,
                 payload: &mut payload,
@@ -217,7 +213,6 @@ mod tests {
             let mut send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
-                mask: true,
                 payload_len: PAYLOAD_STR.len(),
                 masking_key: Some(0xa3ff0792 as u32), // 100% genuine random mask
                 payload: &mut payload,
