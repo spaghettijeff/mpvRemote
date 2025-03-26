@@ -1,7 +1,9 @@
 use core::str;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use crate::websocket;
 
 
 const index_html: &[u8] = include_bytes!("../www/index.html");
@@ -19,17 +21,15 @@ macro_rules! continue_on_err {
 }
 
 #[derive(Debug)]
-pub struct Request<'a, T: std::io::Read> {
-    method: Method,
-    path: String,
-    ver: String,
-    headers: HashMap<String, String>,
-    body: Option<&'a T>,
+pub struct Request {
+    pub method: Method,
+    pub path: String,
+    pub ver: String,
+    pub headers: HashMap<String, String>,
 }
 
-impl<'a, T: std::io::Read> Request<'a, T> where
-    &'a T: std::io::Read {
-    fn parse(stream: &'a T) -> Result<Request<T>, io::Error> {
+impl Request {
+    fn parse<T: Read>(stream: &mut T) -> Result<Request, io::Error> {
         let mut lines = BufReader::new(stream);
         let mut buf = String::new();
         let first_line  = match lines.read_line(&mut buf) {
@@ -56,16 +56,11 @@ impl<'a, T: std::io::Read> Request<'a, T> where
         headers.insert(key.to_string(), val.trim().to_string());
         }
         buf.clear();
-        let body = match headers.get("Content-Length") {
-            Some(_) => Some(stream),
-            None => None,
-        };
         Ok(Request { 
             method: Method::try_from(method.as_str())?,
             path: path.to_owned(), 
             ver: ver.to_owned(),
             headers,
-            body,
         })
     }
 }
@@ -102,6 +97,7 @@ impl TryFrom<&str> for Method {
     }
 }
 
+#[derive(Debug)]
 pub struct Response<'a> {
     version: String,
     status: u16,
@@ -110,21 +106,26 @@ pub struct Response<'a> {
 }
 
 impl<'a> Response<'a> {
-    fn new(version: String, status: u16) -> Response<'a> {
-        Response { version , status, headers: Vec::new(), body: None }
+    pub fn new(version: &str, status: u16) -> Response<'a> {
+        Response {
+            version: version.into(), 
+            status, 
+            headers: Vec::new(),
+            body: None
+        }
     }
 
-    fn header(mut self, key: String, value: String) -> Response<'a> {
-        self.headers.push((key, value));
+    pub fn header(mut self, key: &str, value: &str) -> Response<'a> {
+        self.headers.push((key.into(), value.into()));
         self
     }
 
-    fn body(mut self, body: &'a[u8]) -> Response {
+    pub fn body(mut self, body: &'a[u8]) -> Response {
         self.body = Some(body);
         self
     }
 
-    fn bytes(self) -> Vec<u8> {
+    pub fn bytes(self) -> Vec<u8> {
         let mut header = format!("{} {}\n", self.version, self.status).to_string();
         self.headers.iter().for_each(|item| { 
             header += format!("{}: {}\n", item.0, item.1).as_str();
@@ -143,31 +144,56 @@ pub fn bind_and_listen() -> Result<(), io::Error>{
     let listener = TcpListener::bind("0.0.0.0:8080")?;
     for stream in listener.incoming() {
         let mut stream = continue_on_err!(stream);
-        let request = continue_on_err!(Request::parse(&stream));
+        let request = continue_on_err!(Request::parse(&mut stream));
         println!("{request:#?}");
-
-        let response = handle_request(request);
-        continue_on_err!(stream.write_all(&response.bytes()));
+        continue_on_err!(handle_request(request, stream));
     }
     Ok(())
 }
 
-fn handle_request<T: std::io::Read>(request: Request<T>) -> Response {
+fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream: T) -> Result<(), io::Error> {
     match request.path.as_str() {
-        "/" => Response::new("HTTP/1.1".into(), 200)
-            .header("Content-Type".into(), "text/html".into())
-            .body(index_html),
-        "/static/main.js" => Response::new("HTTP/1.1".into(), 200)
-            .header("Content-Type".into(), "text/javascript".into())
-            .body(main_js),
-        "/static/output.css" => Response::new("HTTP/1.1".into(), 200)
-            .header("Content-Type".into(), "text/css".into())
-            .body(output_css),
-        "/static/symbols/material-symbols.woff2" => Response::new("HTTP/1.1".into(), 200)
-            .header("Content-Type".into(), "font/woff2".into())
-            .body(symbols_font),
-        _path => Response::new("HTTP/1.1".into(), 404)
-            .header("Content-Type".into(), "text/html".into()),
+        "/" => {
+            let response = Response::new("HTTP/1.1".into(), 200)
+                .header("Content-Type".into(), "text/html".into())
+                .body(index_html);
+            stream.write_all(&response.bytes())
+            },
+        "/static/main.js" => {
+            let response = Response::new("HTTP/1.1".into(), 200)
+                .header("Content-Type".into(), "text/javascript".into())
+                .body(main_js);
+            stream.write_all(&response.bytes())
+            },
+        "/static/output.css" => {
+            let response = Response::new("HTTP/1.1".into(), 200)
+                .header("Content-Type".into(), "text/css".into())
+                .body(output_css);
+            stream.write_all(&response.bytes())
+            },
+        "/static/symbols/material-symbols.woff2" => {
+            let response = Response::new("HTTP/1.1".into(), 200)
+                .header("Content-Type".into(), "font/woff2".into())
+                .body(symbols_font);
+            stream.write_all(&response.bytes())
+            },
+        "/socket" => {
+            let mut ws = websocket::WebSocketServer::handshake(request, stream)?;
+            loop {
+                ws.send_text("\"hello!\"".to_string())?;
+                let msg = ws.read_message()?;
+                println!("Frame Received: {:#?}", msg);
+                let mut buf = String::new();
+                let len = msg.payload_len;
+                msg.take(len.try_into().unwrap()).read_to_string(&mut buf)?;
+                println!("Message: {}", buf);
+            }
+            },
+        _path => {
+            let response = Response::new("HTTP/1.1".into(), 404)
+                .header("Content-Type".into(), "text/html".into());
+            stream.write_all(&response.bytes())
+            },
     }
 }
 
