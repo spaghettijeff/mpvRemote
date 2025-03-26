@@ -1,29 +1,59 @@
 use crate::server::{Request, Response};
 use std::io::{self, Cursor, Read, Write};
-use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
+use byteorder::{ByteOrder, NativeEndian, NetworkEndian, WriteBytesExt};
+use sha1::{self, Digest};
+use base64::Engine;
 
-pub enum WebSocket<T: Read + Write> {
-    Server(T),
-    Client(T),
-}
+const WS_ACCEPT_CONSTANT: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-impl<T: Read + Write> WebSocket<T> {
-    fn read_message(&self) -> Message<T> {
-        todo!()
+#[allow(dead_code)]
+pub struct WebSocketClient<T: Read + Write>(T);
+
+#[allow(dead_code)]
+pub struct WebSocketServer<T: Read + Write>(T);
+
+#[allow(dead_code)]
+impl<T: Read + Write> WebSocketServer<T> {
+
+    pub fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>, io::Error> {
+        let ws_key = request.headers.get("Sec-WebSocket-Key")
+            .ok_or(io::Error::new(io::ErrorKind::Other, "Sec-WebSocket-Key header not found in request"))?;
+        let mut hasher = sha1::Sha1::new();
+        hasher.update(ws_key.to_string() + WS_ACCEPT_CONSTANT);
+        let ws_accept = base64::engine::general_purpose::STANDARD.encode(&hasher.finalize()[..]);
+        let response = Response::new("HTTP/1.1".into(), 101)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Accept", &ws_accept);
+        stream.write_all(&response.bytes())?;
+        Ok(WebSocketServer(stream))
     }
-    fn write_message(&self, msg: Message<T>) -> () {
-        todo!()
+
+    pub fn read_message(&mut self) -> Result<Frame<T>, io::Error> {
+        Frame::deserialize(&mut self.0)
+    }
+
+    pub fn write_message<R: Read>(&mut self, msg: Frame<R>) -> Result<u64, io::Error> {
+        let mut frame_data = msg.serialize();
+        io::copy(&mut frame_data, &mut self.0)
+    }
+    pub fn send_text(&mut self, s: String) -> Result<u64, io::Error> {
+        let frame = Frame{
+            fin: true,
+            opcode: OpCode::Text,
+            masking_key: None,
+            payload_len: s.len(),
+            payload: &mut s.as_bytes(),
+        };
+        let mut frame_data = frame.serialize();
+        io::copy(&mut frame_data, &mut self.0)
     }
 }
 
-pub enum Message<'a, T: Read> {
-    Text(Frame<'a, T>),
-    Bytes(Frame<'a, T>),
-}
-
+#[allow(dead_code)]
 #[repr(u8)]
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum OpCode {
+pub enum OpCode {
     Cont = 0x0,
     Text = 0x1,
     Binary = 0x2,
@@ -48,11 +78,11 @@ impl TryFrom<u8> for OpCode {
 }
 
 #[derive(Debug)]
-struct Frame<'a, T> {
-    fin: bool,
-    opcode: OpCode,
-    payload_len: usize,
-    masking_key: Option<u32>,
+pub struct Frame<'a, T> {
+    pub fin: bool,
+    pub opcode: OpCode,
+    pub payload_len: usize,
+    pub masking_key: Option<u32>,
     payload: &'a mut T,
 }
 
@@ -96,7 +126,7 @@ impl<'a, T: Read> Frame<'a, T> {
 
         let masking_key = if mask {
             stream.take(4).read(&mut buffer)?;
-            Some(NetworkEndian::read_u32(&buffer) as u32)
+            Some(NativeEndian::read_u32(&buffer) as u32)
         } else { 
             None
         };
@@ -109,7 +139,7 @@ impl<'a, T: Read> Frame<'a, T> {
         })
     }
 
-    fn serialize(&'a mut self) -> std::io::Chain<Cursor<Vec<u8>>, &'a mut Self> {
+    fn serialize(self) -> std::io::Chain<Cursor<Vec<u8>>, Self> {
         let mask = matches!(self.masking_key, Some(_));
         let mut header_bytes: Vec<u8> = Vec::new();
         let byte_1 = if self.fin { 0b10000000 } else { 0 } | self.opcode as u8;
@@ -159,7 +189,7 @@ mod tests {
     fn frame_serialize() {
         let s = "hello world";
         let mut payload = Cursor::new(s);
-        let mut frame = Frame{
+        let frame = Frame{
             fin: true,
             opcode: OpCode::Text,
             payload_len: s.len(),
@@ -181,7 +211,7 @@ mod tests {
         let listener = std::net::TcpListener::bind(ADDR).unwrap();
         let th = std::thread::spawn(move || {
             let mut payload = Cursor::new(PAYLOAD_STR);
-            let mut send_frame = Frame{
+            let send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
                 payload_len: PAYLOAD_STR.len(),
@@ -210,7 +240,7 @@ mod tests {
         let listener = std::net::TcpListener::bind(ADDR).unwrap();
         let th = std::thread::spawn(move || {
             let mut payload = Cursor::new(PAYLOAD_STR);
-            let mut send_frame = Frame{
+            let send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
                 payload_len: PAYLOAD_STR.len(),
