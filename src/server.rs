@@ -181,11 +181,10 @@ fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream:
             let mut ws = websocket::WebSocketServer::handshake(request, stream)?;
             loop {
                 ws.send_text("\"hello!\"".to_string())?;
-                let msg = ws.read_message()?;
+                let mut msg = ws.read_message()?;
                 println!("Frame Received: {:#?}", msg);
                 let mut buf = String::new();
-                let len = msg.payload_len;
-                msg.take(len.try_into().unwrap()).read_to_string(&mut buf)?;
+                msg.read_to_string(&mut buf)?;
                 println!("Message: {}", buf);
             }
             },

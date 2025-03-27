@@ -29,8 +29,14 @@ impl<T: Read + Write> WebSocketServer<T> {
         Ok(WebSocketServer(stream))
     }
 
-    pub fn read_message(&mut self) -> Result<Frame<T>, io::Error> {
-        Frame::deserialize(&mut self.0)
+    pub fn read_message(&mut self) -> Result<Message<T>, io::Error> {
+        let frame = Frame::deserialize(&mut self.0)?;
+        let len = frame.payload_len;
+        match frame.opcode {
+            OpCode::Text => Ok(Message::Text(frame.take(len))),
+            OpCode::Binary => Ok(Message::Binary(frame.take(len))),
+            _ => todo!(),
+        }
     }
 
     pub fn write_message<R: Read>(&mut self, msg: Frame<R>) -> Result<u64, io::Error> {
@@ -50,6 +56,20 @@ impl<T: Read + Write> WebSocketServer<T> {
     }
 }
 
+#[derive(Debug)]
+pub enum Message<'a, T: Read> {
+    Text(io::Take<Frame<'a, T>>),
+    Binary(io::Take<Frame<'a, T>>),
+}
+
+impl<'a, T: Read> Read for Message<'a, T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Message::Text(x) => x.read(buf),
+            Message::Binary(x) => x.read(buf),
+        }
+    }
+}
 
 #[allow(dead_code)]
 #[repr(u8)]
@@ -91,12 +111,11 @@ impl<'a, T: Read> Read for Frame<'a, T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.masking_key {
             Some(mask) => {
-            let mask = unsafe {
-                std::mem::transmute::<u32, [u8; 4]>(mask)
-            };
+            let mut mask_bytes: [u8; 4] = [0; 4];
+            NetworkEndian::write_u32(&mut mask_bytes, mask);
             let read_result = (*self.payload).read(buf)?;
             for i in 0..read_result {
-                buf[i] = buf[i] ^ mask[i % 4];
+                buf[i] = buf[i] ^ mask_bytes[i % 4];
             }
             Ok(read_result)
             },
@@ -127,7 +146,7 @@ impl<'a, T: Read> Frame<'a, T> {
 
         let masking_key = if mask {
             stream.take(4).read(&mut buffer)?;
-            Some(NativeEndian::read_u32(&buffer) as u32)
+            Some(NetworkEndian::read_u32(&buffer) as u32)
         } else { 
             None
         };
