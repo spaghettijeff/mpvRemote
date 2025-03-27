@@ -42,13 +42,14 @@ impl<T: Read + Write> WebSocketServer<T> {
             fin: true,
             opcode: OpCode::Text,
             masking_key: None,
-            payload_len: s.len(),
+            payload_len: s.len() as u64,
             payload: &mut s.as_bytes(),
         };
         let mut frame_data = frame.serialize();
         io::copy(&mut frame_data, &mut self.0)
     }
 }
+
 
 #[allow(dead_code)]
 #[repr(u8)]
@@ -81,7 +82,7 @@ impl TryFrom<u8> for OpCode {
 pub struct Frame<'a, T> {
     pub fin: bool,
     pub opcode: OpCode,
-    pub payload_len: usize,
+    pub payload_len: u64,
     pub masking_key: Option<u32>,
     payload: &'a mut T,
 }
@@ -112,16 +113,16 @@ impl<'a, T: Read> Frame<'a, T> {
         let opcode: OpCode = (0b01111111 & buffer[0]).try_into()?;
 
         let mask: bool = (0b10000000 & buffer[1]) != 0;
-        let payload_len: usize = match 0b01111111 & buffer[1] {
+        let payload_len: u64 = match 0b01111111 & buffer[1] {
             126 => {
                 stream.take(2).read(&mut buffer)?;
-                NetworkEndian::read_u16(&buffer) as usize
+                NetworkEndian::read_u16(&buffer) as u64
             },
             127 => {
                 stream.take(8).read(&mut buffer)?;
-                NetworkEndian::read_u64(&buffer) as usize
+                NetworkEndian::read_u64(&buffer) as u64
             },
-            len => len as usize,
+            len => len as u64,
         };
 
         let masking_key = if mask {
@@ -148,7 +149,7 @@ impl<'a, T: Read> Frame<'a, T> {
         if self.payload_len <= 125 { // 7 bit payload length
             let byte = if mask { 0b10000000 } else { 0 } | self.payload_len as u8;
             header_bytes.push(byte);
-        } else if self.payload_len <= u16::MAX as usize { // 16 bit payload length
+        } else if self.payload_len <= u16::MAX as u64 { // 16 bit payload length
             let byte = if mask { 0b10000000 } else { 0 } | 126 as u8;
             header_bytes.push(byte);
             header_bytes.write_u16::<NetworkEndian>(self.payload_len as u16).unwrap();
@@ -192,7 +193,7 @@ mod tests {
         let frame = Frame{
             fin: true,
             opcode: OpCode::Text,
-            payload_len: s.len(),
+            payload_len: s.len() as u64,
             masking_key: None,
             payload: &mut payload,
         };
@@ -214,7 +215,7 @@ mod tests {
             let send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
-                payload_len: PAYLOAD_STR.len(),
+                payload_len: PAYLOAD_STR.len() as u64,
                 masking_key: None,
                 payload: &mut payload,
             };
@@ -243,7 +244,7 @@ mod tests {
             let send_frame = Frame{
                 fin: true,
                 opcode: OpCode::Text,
-                payload_len: PAYLOAD_STR.len(),
+                payload_len: PAYLOAD_STR.len() as u64,
                 masking_key: Some(0xa3ff0792 as u32), // 100% genuine random mask
                 payload: &mut payload,
             };
