@@ -43,6 +43,9 @@ impl<T: Read + Write> WebSocketServer<T> {
         let (mut reader, opcode) = match &mut msg {
             Message::Text(r) => (r, OpCode::Text),
             Message::Binary(r) => (r, OpCode::Binary),
+            Message::Ping(r) => (r, OpCode::Ping),
+            Message::Pong(r) => (r, OpCode::Pong),
+            Message::Close(_status, _r) => todo!(),
         };
         let payload_len = reader.limit();
         let frame = Frame {
@@ -61,6 +64,9 @@ impl<T: Read + Write> WebSocketServer<T> {
 pub enum Message<T: Read> {
     Text(Take<T>),
     Binary(Take<T>),
+    Close(u16, Take<T>),
+    Ping(Take<T>),
+    Pong(Take<T>),
 }
 
 impl<'a, T: Read> Read for Message<T> {
@@ -68,15 +74,22 @@ impl<'a, T: Read> Read for Message<T> {
         match self {
             Message::Text(r) => r.read(buf),
             Message::Binary(r) => r.read(buf),
+            Message::Close(_status, r) => r.read(buf),
+            Message::Ping(r) => r.read(buf),
+            Message::Pong(r) => r.read(buf),
         }
     }
 }
 
 impl<'a, T: Read> Drop for Message<T> {
     fn drop(&mut self) {
+        use Message::*;
         let r = match self {
-            Message::Text(r) => r,
-            Message::Binary(r) => r,
+            Text(r) => r,
+            Binary(r) => r,
+            Ping(r) => r,
+            Pong(r) => r,
+            Close(_status, r) => r,
         };
         let _ = io::copy(r, &mut io::sink());
     }
@@ -87,6 +100,13 @@ impl<'a> From<&'a str> for Message<&'a[u8]> {
         let len = value.len() as u64;
         let bytes = value.as_bytes();
         Message::Text(bytes.take(len))
+    }
+}
+
+impl<'a> From<&'a[u8]> for Message<&'a[u8]> {
+    fn from(value: &'a[u8]) -> Self {
+        let len = value.len() as u64;
+        Message::Binary(value.take(len))
     }
 }
 
