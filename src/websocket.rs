@@ -52,16 +52,34 @@ impl<T: Read + Write> WebSocketServer<T> {
 
     pub fn send_message<R: Read>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
         let opcode: OpCode = msg.r#type.into();
-        let payload_len = msg.data.limit();
-        let frame = Frame {
-            fin: true,
-            opcode,
-            payload_len,
-            masking_key: None,
-            payload: &mut msg.data,
-        };
-        let mut frame_data = frame.serialize();
-        io::copy(&mut frame_data, &mut self.0)
+        match msg.r#type {
+            MessageType::Close(code) => {
+                let mut code_bytes: [u8; 2] = [0; 2];
+                NetworkEndian::write_u16(&mut code_bytes, code);
+                let payload_len = msg.data.limit();
+                let frame = Frame {
+                    fin: true,
+                    opcode,
+                    payload_len,
+                    masking_key: None,
+                    payload: &mut code_bytes.chain(&mut msg.data),
+                };
+                let mut frame_data = frame.serialize();
+                io::copy(&mut frame_data, &mut self.0)
+            }
+            _ => {
+                let payload_len = msg.data.limit();
+                let frame = Frame {
+                    fin: true,
+                    opcode,
+                    payload_len,
+                    masking_key: None,
+                    payload: &mut msg.data,
+                };
+                let mut frame_data = frame.serialize();
+                io::copy(&mut frame_data, &mut self.0)
+            },
+        }
     }
 }
 
