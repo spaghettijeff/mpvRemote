@@ -1,6 +1,6 @@
 use crate::server::{Request, Response};
-use std::io::{self, Cursor, Read, Write};
-use byteorder::{ByteOrder, NativeEndian, NetworkEndian, WriteBytesExt};
+use std::io::{self, Cursor, Read, Write, Take};
+use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
 use sha1::{self, Digest};
 use base64::Engine;
 
@@ -29,7 +29,7 @@ impl<T: Read + Write> WebSocketServer<T> {
         Ok(WebSocketServer(stream))
     }
 
-    pub fn read_message(&mut self) -> Result<Message<T>, io::Error> {
+    pub fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>, io::Error> {
         let frame = Frame::deserialize(&mut self.0)?;
         let len = frame.payload_len;
         match frame.opcode {
@@ -39,17 +39,18 @@ impl<T: Read + Write> WebSocketServer<T> {
         }
     }
 
-    pub fn write_message<R: Read>(&mut self, msg: Frame<R>) -> Result<u64, io::Error> {
-        let mut frame_data = msg.serialize();
-        io::copy(&mut frame_data, &mut self.0)
-    }
-    pub fn send_text(&mut self, s: String) -> Result<u64, io::Error> {
-        let frame = Frame{
+    pub fn send_message<R: Read>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
+        let (mut reader, opcode) = match &mut msg {
+            Message::Text(r) => (r, OpCode::Text),
+            Message::Binary(r) => (r, OpCode::Binary),
+        };
+        let payload_len = reader.limit();
+        let frame = Frame {
             fin: true,
-            opcode: OpCode::Text,
+            opcode,
+            payload_len,
             masking_key: None,
-            payload_len: s.len() as u64,
-            payload: &mut s.as_bytes(),
+            payload: &mut reader,
         };
         let mut frame_data = frame.serialize();
         io::copy(&mut frame_data, &mut self.0)
@@ -57,17 +58,27 @@ impl<T: Read + Write> WebSocketServer<T> {
 }
 
 #[derive(Debug)]
-pub enum Message<'a, T: Read> {
-    Text(io::Take<Frame<'a, T>>),
-    Binary(io::Take<Frame<'a, T>>),
+pub enum Message<T: Read> {
+    Text(Take<T>),
+    Binary(Take<T>),
 }
 
-impl<'a, T: Read> Read for Message<'a, T> {
+impl<'a, T: Read> Read for Message<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            Message::Text(x) => x.read(buf),
-            Message::Binary(x) => x.read(buf),
+            Message::Text(r) => r.read(buf),
+            Message::Binary(r) => r.read(buf),
         }
+    }
+}
+
+impl<'a, T: Read> Drop for Message<T> {
+    fn drop(&mut self) {
+        let r = match self {
+            Message::Text(r) => r,
+            Message::Binary(r) => r,
+        };
+        io::copy(r, &mut io::stdout());
     }
 }
 
@@ -100,10 +111,10 @@ impl TryFrom<u8> for OpCode {
 
 #[derive(Debug)]
 pub struct Frame<'a, T> {
-    pub fin: bool,
-    pub opcode: OpCode,
-    pub payload_len: u64,
-    pub masking_key: Option<u32>,
+    fin: bool,
+    opcode: OpCode,
+    payload_len: u64,
+    masking_key: Option<u32>,
     payload: &'a mut T,
 }
 
