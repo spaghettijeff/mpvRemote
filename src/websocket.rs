@@ -1,6 +1,6 @@
 use crate::server::{Request, Response};
 use std::io::{self, Cursor, Read, Write, Take};
-use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
+use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use sha1::{self, Digest};
 use base64::Engine;
 
@@ -30,30 +30,35 @@ impl<T: Read + Write> WebSocketServer<T> {
     }
 
     pub fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>, io::Error> {
-        let frame = Frame::deserialize(&mut self.0)?;
-        let len = frame.payload_len;
-        match frame.opcode {
-            OpCode::Text => Ok(Message::Text(frame.take(len))),
-            OpCode::Binary => Ok(Message::Binary(frame.take(len))),
-            _ => todo!(),
-        }
+        let mut frame = Frame::deserialize(&mut self.0)?;
+        let mut len = frame.payload_len;
+        let m_type = match frame.opcode {
+            OpCode::Text => MessageType::Text,
+            OpCode::Binary => MessageType::Binary,
+            OpCode::Ping => MessageType::Ping,
+            OpCode::Pong => MessageType::Pong,
+            OpCode::Close => {
+                let code = frame.read_u16::<NetworkEndian>()?;
+                len -= size_of::<CloseStatus>() as u64;
+                MessageType::Close(code)
+            },
+            OpCode::Cont => todo!(),
+        };
+        Ok(Message{
+            data: frame.take(len),
+            r#type: m_type,
+        })
     }
 
     pub fn send_message<R: Read>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
-        let (mut reader, opcode) = match &mut msg {
-            Message::Text(r) => (r, OpCode::Text),
-            Message::Binary(r) => (r, OpCode::Binary),
-            Message::Ping(r) => (r, OpCode::Ping),
-            Message::Pong(r) => (r, OpCode::Pong),
-            Message::Close(_status, _r) => todo!(),
-        };
-        let payload_len = reader.limit();
+        let opcode: OpCode = msg.r#type.into();
+        let payload_len = msg.data.limit();
         let frame = Frame {
             fin: true,
             opcode,
             payload_len,
             masking_key: None,
-            payload: &mut reader,
+            payload: &mut msg.data,
         };
         let mut frame_data = frame.serialize();
         io::copy(&mut frame_data, &mut self.0)
@@ -61,37 +66,42 @@ impl<T: Read + Write> WebSocketServer<T> {
 }
 
 #[derive(Debug)]
-pub enum Message<T: Read> {
-    Text(Take<T>),
-    Binary(Take<T>),
-    Close(u16, Take<T>),
-    Ping(Take<T>),
-    Pong(Take<T>),
+pub struct Message<T: Read> {
+    data: Take<T>,
+    r#type: MessageType,
+}
+
+type CloseStatus = u16;
+#[derive(Debug, Clone, Copy)]
+enum MessageType {
+    Text,
+    Binary,
+    Ping,
+    Pong,
+    Close(CloseStatus),
+}
+
+impl From<MessageType> for OpCode {
+    fn from(value: MessageType) -> Self {
+        match value {
+            MessageType::Text => OpCode::Text,
+            MessageType::Binary => OpCode::Binary,
+            MessageType::Ping => OpCode::Ping,
+            MessageType::Pong => OpCode::Pong,
+            MessageType::Close(_) => OpCode::Close,
+        }
+    }
 }
 
 impl<'a, T: Read> Read for Message<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Message::Text(r) => r.read(buf),
-            Message::Binary(r) => r.read(buf),
-            Message::Close(_status, r) => r.read(buf),
-            Message::Ping(r) => r.read(buf),
-            Message::Pong(r) => r.read(buf),
-        }
+        self.data.read(buf)
     }
 }
 
 impl<'a, T: Read> Drop for Message<T> {
     fn drop(&mut self) {
-        use Message::*;
-        let r = match self {
-            Text(r) => r,
-            Binary(r) => r,
-            Ping(r) => r,
-            Pong(r) => r,
-            Close(_status, r) => r,
-        };
-        let _ = io::copy(r, &mut io::sink());
+        let _ = io::copy(&mut self.data, &mut io::sink());
     }
 }
 
@@ -99,14 +109,20 @@ impl<'a> From<&'a str> for Message<&'a[u8]> {
     fn from(value: &'a str) -> Self {
         let len = value.len() as u64;
         let bytes = value.as_bytes();
-        Message::Text(bytes.take(len))
+        Message {
+            r#type: MessageType::Text,
+            data: bytes.take(len),
+        }
     }
 }
 
 impl<'a> From<&'a[u8]> for Message<&'a[u8]> {
     fn from(value: &'a[u8]) -> Self {
         let len = value.len() as u64;
-        Message::Binary(value.take(len))
+        Message {
+            r#type: MessageType::Binary,
+            data: value.take(len),
+        }
     }
 }
 
