@@ -78,7 +78,15 @@ impl<'a, T: Read> Drop for Message<T> {
             Message::Text(r) => r,
             Message::Binary(r) => r,
         };
-        io::copy(r, &mut io::stdout());
+        let _ = io::copy(r, &mut io::sink());
+    }
+}
+
+impl<'a> From<&'a str> for Message<&'a[u8]> {
+    fn from(value: &'a str) -> Self {
+        let len = value.len() as u64;
+        let bytes = value.as_bytes();
+        Message::Text(bytes.take(len))
     }
 }
 

@@ -180,12 +180,10 @@ fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream:
         "/socket" => {
             let mut ws = websocket::WebSocketServer::handshake(request, stream)?;
             loop {
-                ws.send_text("\"hello!\"".to_string())?;
-                let mut msg = ws.read_message()?;
-                println!("Frame Received: {:#?}", msg);
-                let mut buf = String::new();
-                msg.read_to_string(&mut buf)?;
-                println!("Message: {}", buf);
+                {
+                let _msg = ws.get_message()?;
+                }
+                ws.send_message("\"hello!\"".into());
             }
             },
         _path => {
