@@ -125,21 +125,56 @@ impl<'a, T: Read> Drop for Message<T> {
 
 impl<'a> From<&'a str> for Message<&'a[u8]> {
     fn from(value: &'a str) -> Self {
-        let len = value.len() as u64;
-        let bytes = value.as_bytes();
+        Self::text(value)
+    }
+}
+
+impl<'a> From<&'a [u8]> for Message<&'a [u8]> {
+    fn from(value: &'a[u8]) -> Self {
+        Self::binary(value)
+    }
+}
+
+#[allow(dead_code)]
+impl<'a> Message<&'a [u8]> {
+    fn text(data: &'a str) -> Self {
+        let len = data.len() as u64;
+        let bytes = data.as_bytes();
         Message {
             r#type: MessageType::Text,
             data: bytes.take(len),
         }
     }
-}
 
-impl<'a> From<&'a[u8]> for Message<&'a[u8]> {
-    fn from(value: &'a[u8]) -> Self {
-        let len = value.len() as u64;
+    fn binary(data: &'a [u8]) -> Self {
+        let len = data.len() as u64;
         Message {
-            r#type: MessageType::Binary,
-            data: value.take(len),
+            r#type: MessageType::Text,
+            data: data.take(len),
+        }
+    }
+
+    fn close(status: CloseStatus, reason: &'a str) -> Self {
+        let len = reason.len() as u64;
+        let bytes = reason.as_bytes();
+        Message {
+            r#type: MessageType::Close(status),
+            data: bytes.take(len),
+        }
+    }
+
+    fn ping(data: &'a [u8]) -> Self {
+        let len = data.len() as u64;
+        Message {
+            r#type: MessageType::Ping,
+            data: data.take(len),
+        }
+    }
+    fn pong (data: &'a [u8]) -> Self {
+        let len = data.len() as u64;
+        Message {
+            r#type: MessageType::Pong,
+            data: data.take(len),
         }
     }
 }
