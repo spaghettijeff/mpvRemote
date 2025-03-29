@@ -1,15 +1,15 @@
 use core::str;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{self, BufRead, BufReader, Read};
+use std::net::TcpListener;
 use crate::websocket;
 
 
-const index_html: &[u8] = include_bytes!("../www/index.html");
-const main_js: &[u8] = include_bytes!("../www/static/main.js");
-const output_css: &[u8] = include_bytes!("../www/static/output.css");
-const symbols_font: &[u8] = include_bytes!("../www/static/symbols/material-symbols.woff2");
+const INDEX_HTML: &[u8] = include_bytes!("../www/index.html");
+const MAIN_JS: &[u8] = include_bytes!("../www/static/main.js");
+const OUTPUT_CSS: &[u8] = include_bytes!("../www/static/output.css");
+const SYMBOLS_FONT: &[u8] = include_bytes!("../www/static/symbols/material-symbols.woff2");
 
 macro_rules! continue_on_err {
     ($expression:expr) => {
@@ -156,25 +156,25 @@ fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream:
         "/" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/html".into())
-                .body(index_html);
+                .body(INDEX_HTML);
             stream.write_all(&response.bytes())
             },
         "/static/main.js" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/javascript".into())
-                .body(main_js);
+                .body(MAIN_JS);
             stream.write_all(&response.bytes())
             },
         "/static/output.css" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/css".into())
-                .body(output_css);
+                .body(OUTPUT_CSS);
             stream.write_all(&response.bytes())
             },
         "/static/symbols/material-symbols.woff2" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "font/woff2".into())
-                .body(symbols_font);
+                .body(SYMBOLS_FONT);
             stream.write_all(&response.bytes())
             },
         "/socket" => {
@@ -183,7 +183,7 @@ fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream:
                 {
                 let _msg = ws.get_message()?;
                 }
-                ws.send_message("\"hello!\"".into());
+                ws.send_message("\"hello!\"".into())?;
             }
             },
         _path => {
