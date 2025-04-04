@@ -1,21 +1,22 @@
 use crate::server::{Request, Response};
-use std::io::{self, Cursor, Read, Write, Take};
+use std::io;
+use tokio::io::{copy, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Take};
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use sha1::{self, Digest};
 use base64::Engine;
+use std::pin::Pin;
 
 const WS_ACCEPT_CONSTANT: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[allow(dead_code)]
-pub struct WebSocketClient<T: Read + Write>(T);
+pub struct WebSocketClient<T: AsyncRead + AsyncWrite>(T);
 
 #[allow(dead_code)]
-pub struct WebSocketServer<T: Read + Write>(T);
+pub struct WebSocketServer<T: AsyncRead + AsyncWrite>(T);
 
 #[allow(dead_code)]
-impl<T: Read + Write> WebSocketServer<T> {
-
-    pub fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>, io::Error> {
+impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
+    pub async fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>, io::Error> {
         let ws_key = request.headers.get("Sec-WebSocket-Key")
             .ok_or(io::Error::new(io::ErrorKind::Other, "Sec-WebSocket-Key header not found in request"))?;
         let mut hasher = sha1::Sha1::new();
@@ -25,12 +26,12 @@ impl<T: Read + Write> WebSocketServer<T> {
             .header("Upgrade", "websocket")
             .header("Connection", "Upgrade")
             .header("Sec-WebSocket-Accept", &ws_accept);
-        stream.write_all(&response.bytes())?;
+        stream.write_all(&response.bytes()).await?;
         Ok(WebSocketServer(stream))
     }
 
-    pub fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>, io::Error> {
-        let mut frame = Frame::deserialize(&mut self.0)?;
+    pub async fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>, io::Error> {
+        let mut frame = Frame::deserialize(&mut self.0).await?;
         let mut len = frame.payload_len;
         let m_type = match frame.opcode {
             OpCode::Text => MessageType::Text,
@@ -38,7 +39,7 @@ impl<T: Read + Write> WebSocketServer<T> {
             OpCode::Ping => MessageType::Ping,
             OpCode::Pong => MessageType::Pong,
             OpCode::Close => {
-                let code = frame.read_u16::<NetworkEndian>()?;
+                let code = frame.read_u16().await?;
                 len -= size_of::<CloseStatus>() as u64;
                 MessageType::Close(code)
             },
@@ -50,7 +51,7 @@ impl<T: Read + Write> WebSocketServer<T> {
         })
     }
 
-    pub fn send_message<R: Read>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
+    pub async fn send_message<R: AsyncRead + Unpin>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
         let opcode: OpCode = msg.r#type.into();
         match msg.r#type {
             MessageType::Close(code) => {
@@ -62,10 +63,11 @@ impl<T: Read + Write> WebSocketServer<T> {
                     opcode,
                     payload_len,
                     masking_key: None,
+                    bytes_read: 0,
                     payload: &mut code_bytes.chain(&mut msg.data),
                 };
                 let mut frame_data = frame.serialize();
-                io::copy(&mut frame_data, &mut self.0)
+                copy(&mut frame_data, &mut self.0).await
             }
             _ => {
                 let payload_len = msg.data.limit();
@@ -74,17 +76,18 @@ impl<T: Read + Write> WebSocketServer<T> {
                     opcode,
                     payload_len,
                     masking_key: None,
+                    bytes_read: 0,
                     payload: &mut msg.data,
                 };
                 let mut frame_data = frame.serialize();
-                io::copy(&mut frame_data, &mut self.0)
+                copy(&mut frame_data, &mut self.0).await
             },
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Message<T: Read> {
+pub struct Message<T: AsyncRead + Unpin> {
     data: Take<T>,
     r#type: MessageType,
 }
@@ -111,17 +114,21 @@ impl From<MessageType> for OpCode {
     }
 }
 
-impl<'a, T: Read> Read for Message<T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.data.read(buf)
+impl<'a, T: AsyncRead + Unpin> AsyncRead for Message<T> {
+    fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.data).poll_read(cx, buf)
     }
 }
 
-impl<'a, T: Read> Drop for Message<T> {
-    fn drop(&mut self) {
-        let _ = io::copy(&mut self.data, &mut io::sink());
-    }
-}
+//impl<'a, T: AsyncRead + Unpin> Drop for Message<T> {
+//    fn drop(&mut self) {
+//        let _ = copy(&mut self.data, &mut tokio::io::sink()).await.borrow_mut;
+//    }
+//}
 
 impl<'a> From<&'a str> for Message<&'a[u8]> {
     fn from(value: &'a str) -> Self {
@@ -212,48 +219,59 @@ pub struct Frame<'a, T> {
     opcode: OpCode,
     payload_len: u64,
     masking_key: Option<u32>,
+    bytes_read: u64,
     payload: &'a mut T,
 }
 
-impl<'a, T: Read> Read for Frame<'a, T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+impl<'a, T: AsyncRead + Unpin> AsyncRead for Frame<'a, T> {
+    fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+        let buf_start = buf.filled().len();
+        let poll_result = Pin::new(&mut self.payload).poll_read(cx, buf);
+        let buf_end = buf.filled().len();
+        let bytes_read = buf_end - buf_start;
+        let bytes_start = self.bytes_read as usize;
+        self.bytes_read += bytes_read as u64;
         match self.masking_key {
+            None => (),
             Some(mask) => {
-            let mut mask_bytes: [u8; 4] = [0; 4];
-            NetworkEndian::write_u32(&mut mask_bytes, mask);
-            let read_result = (*self.payload).read(buf)?;
-            for i in 0..read_result {
-                buf[i] = buf[i] ^ mask_bytes[i % 4];
-            }
-            Ok(read_result)
+                let mut mask_bytes: [u8; 4] = [0; 4];
+                NetworkEndian::write_u32(&mut mask_bytes, mask);
+                for i in 0..bytes_read {
+                    let i = i as usize;
+                    buf.filled_mut()[buf_start + i] ^= mask_bytes[(bytes_start + i) % 4];
+                }
             },
-            None => (*self.payload).read(buf),
-        }
+        };
+        poll_result
     }
 }
 
-impl<'a, T: Read> Frame<'a, T> {
-    fn deserialize(stream: &'a mut T) -> Result<Frame<'a, T>, io::Error> {
+impl<'a, T: AsyncRead + AsyncReadExt + Unpin> Frame<'a, T> {
+    async fn deserialize(stream: &'a mut T) -> Result<Frame<'a, T>, io::Error> {
         let mut buffer = [0; 8];
-        stream.take(2).read(&mut buffer)?;
+        stream.take(2).read(&mut buffer).await?;
         let fin: bool = (0b10000000 & buffer[0]) != 0;
         let opcode: OpCode = (0b01111111 & buffer[0]).try_into()?;
 
         let mask: bool = (0b10000000 & buffer[1]) != 0;
         let payload_len: u64 = match 0b01111111 & buffer[1] {
             126 => {
-                stream.take(2).read(&mut buffer)?;
+                stream.take(2).read(&mut buffer).await?;
                 NetworkEndian::read_u16(&buffer) as u64
             },
             127 => {
-                stream.take(8).read(&mut buffer)?;
+                stream.take(8).read(&mut buffer).await?;
                 NetworkEndian::read_u64(&buffer) as u64
             },
             len => len as u64,
         };
 
         let masking_key = if mask {
-            stream.take(4).read(&mut buffer)?;
+            stream.take(4).read(&mut buffer).await?;
             Some(NetworkEndian::read_u32(&buffer) as u32)
         } else { 
             None
@@ -263,11 +281,15 @@ impl<'a, T: Read> Frame<'a, T> {
             opcode,
             payload_len,
             masking_key,
+            bytes_read: 0,
             payload: stream,
         })
     }
 
-    fn serialize(self) -> std::io::Chain<Cursor<Vec<u8>>, Self> {
+    fn serialize<'b>(self) -> impl AsyncRead + 'b 
+    where
+        'a: 'b
+    {
         let mask = matches!(self.masking_key, Some(_));
         let mut header_bytes: Vec<u8> = Vec::new();
         let byte_1 = if self.fin { 0b10000000 } else { 0 } | self.opcode as u8;
@@ -279,18 +301,18 @@ impl<'a, T: Read> Frame<'a, T> {
         } else if self.payload_len <= u16::MAX as u64 { // 16 bit payload length
             let byte = if mask { 0b10000000 } else { 0 } | 126 as u8;
             header_bytes.push(byte);
-            header_bytes.write_u16::<NetworkEndian>(self.payload_len as u16).unwrap();
+            WriteBytesExt::write_u16::<NetworkEndian>(&mut header_bytes, self.payload_len as u16).unwrap();
 
         } else { // 64 bit payload length
             let byte = if mask { 0b10000000 } else { 0 } | 127 as u8;
             header_bytes.push(byte);
-            header_bytes.write_u64::<NetworkEndian>(self.payload_len as u64).unwrap();
+            WriteBytesExt::write_u64::<NetworkEndian>(&mut header_bytes, self.payload_len as u64).unwrap();
         }
         match self.masking_key {
-            Some(key) => header_bytes.write_u32::<NetworkEndian>(key).unwrap(),
+            Some(key) => WriteBytesExt::write_u32::<NetworkEndian>(&mut header_bytes, key).unwrap(),
             None => (),
         }
-        Cursor::new(header_bytes).chain(self)
+        io::Cursor::new(header_bytes).chain(self)
     }
 }
 

@@ -1,8 +1,9 @@
 use core::str;
+use std::io;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io::{self, BufRead, BufReader, Read};
-use std::net::TcpListener;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 use crate::websocket;
 
 
@@ -29,10 +30,13 @@ pub struct Request {
 }
 
 impl Request {
-    fn parse<T: Read>(stream: &mut T) -> Result<Request, io::Error> {
+    async fn parse<T>(stream: &mut T) -> Result<Request, io::Error> 
+    where 
+    T: AsyncRead + Unpin,
+    {
         let mut lines = BufReader::new(stream);
         let mut buf = String::new();
-        let first_line  = match lines.read_line(&mut buf) {
+        let first_line  = match lines.read_line(&mut buf).await {
             Ok(0) => { return Err(io::Error::new(io::ErrorKind::Other, "unexpected EOF in http request")) },
             Err(e) => { return Err(e) },
             Ok(_len) => &buf,
@@ -45,8 +49,7 @@ impl Request {
         let mut headers: HashMap<String, String> = HashMap::new();
         loop {
             buf.clear();
-            let num_read = lines.read_line(&mut buf);
-            print!("{buf}");
+            let num_read = lines.read_line(&mut buf).await;
             if buf == "\r\n" { break }
             let (key, val) = match num_read {
                 Ok(0) => { return Err(io::Error::new(io::ErrorKind::Other, "unexpected EOF in http request")) },
@@ -140,57 +143,64 @@ impl<'a> Response<'a> {
     }
 }
 
-pub fn bind_and_listen() -> Result<(), io::Error>{
-    let listener = TcpListener::bind("0.0.0.0:8080")?;
-    for stream in listener.incoming() {
-        let mut stream = continue_on_err!(stream);
-        let request = continue_on_err!(Request::parse(&mut stream));
-        println!("{request:#?}");
-        continue_on_err!(handle_request(request, stream));
+pub async fn bind_and_listen() -> Result<(), io::Error>{
+    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    loop {
+        let (mut stream, _addr) = continue_on_err!(listener.accept().await);
+        tokio::spawn(async {
+            let request = Request::parse(&mut stream).await.unwrap();
+            dbg!(&request);
+            let _ = handle_request(request, stream).await;
+        });
     }
-    Ok(())
 }
 
-fn handle_request<T: io::Read + io::Write + Debug>(request: Request, mut stream: T) -> Result<(), io::Error> {
+async fn handle_request<T>(request: Request, mut stream: T) -> Result<(), io::Error>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     match request.path.as_str() {
         "/" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/html".into())
                 .body(INDEX_HTML);
-            stream.write_all(&response.bytes())
+            stream.write_all(&response.bytes()).await
             },
         "/static/main.js" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/javascript".into())
                 .body(MAIN_JS);
-            stream.write_all(&response.bytes())
+            stream.write_all(&response.bytes()).await
             },
         "/static/output.css" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/css".into())
                 .body(OUTPUT_CSS);
-            stream.write_all(&response.bytes())
+            stream.write_all(&response.bytes()).await
             },
         "/static/symbols/material-symbols.woff2" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "font/woff2".into())
                 .body(SYMBOLS_FONT);
-            stream.write_all(&response.bytes())
+            stream.write_all(&response.bytes()).await
             },
         "/socket" => {
-            let mut ws = websocket::WebSocketServer::handshake(request, stream)?;
-            loop {
-                {
-                let _msg = ws.get_message()?;
+            tokio::spawn(async move {
+                let mut ws = websocket::WebSocketServer::handshake(request, stream).await?;
+                loop {
+                    let mut msg = ws.get_message().await?;
+                    let mut data = String::new();
+                    msg.read_to_string(&mut data).await?;
+                    ws.send_message(data.as_str().into()).await?;
                 }
-                ws.send_message("\"hello!\"".into())?;
-            }
-            },
+                Ok::<(), io::Error>(())
+            });
+            Ok(())
+        },
         _path => {
             let response = Response::new("HTTP/1.1".into(), 404)
                 .header("Content-Type".into(), "text/html".into());
-            stream.write_all(&response.bytes())
+            stream.write_all(&response.bytes()).await
             },
     }
 }
-
