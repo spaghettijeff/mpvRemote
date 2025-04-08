@@ -1,10 +1,13 @@
 use core::str;
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use crate::websocket;
+use tokio::sync::broadcast;
+use crate::{plugin, websocket};
+use crate::plugin::{EventBroadcaster, EventSubscriber};
 
 
 const INDEX_HTML: &[u8] = include_bytes!("../www/index.html");
@@ -143,19 +146,20 @@ impl<'a> Response<'a> {
     }
 }
 
-pub async fn bind_and_listen() -> Result<(), io::Error>{
+pub async fn bind_and_listen(subscriber: EventSubscriber) -> Result<(), io::Error>{
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
     loop {
         let (mut stream, _addr) = continue_on_err!(listener.accept().await);
-        tokio::spawn(async {
+        let sub = subscriber.clone();
+        tokio::spawn(async move {
             let request = Request::parse(&mut stream).await.unwrap();
-            dbg!(&request);
-            let _ = handle_request(request, stream).await;
+            //dbg!(&request);
+            let _ = handle_request(request, stream, sub).await;
         });
     }
 }
 
-async fn handle_request<T>(request: Request, mut stream: T) -> Result<(), io::Error>
+async fn handle_request<T>(request: Request, mut stream: T, subscriber: EventSubscriber) -> Result<(), io::Error>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -186,14 +190,9 @@ where
             },
         "/socket" => {
             tokio::spawn(async move {
-                let mut ws = websocket::WebSocketServer::handshake(request, stream).await?;
-                loop {
-                    let mut msg = ws.get_message().await?;
-                    let mut data = String::new();
-                    msg.read_to_string(&mut data).await?;
-                    ws.send_message(data.as_str().into()).await?;
-                }
-                Ok::<(), io::Error>(())
+                let ws = websocket::WebSocketServer::handshake(request, stream).await?;
+                plugin::handle_client_connection(ws, subscriber()).await?;
+                Ok::<(), io::Error>(()) //complier warning but required for return type 
             });
             Ok(())
         },
