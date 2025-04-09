@@ -1,5 +1,6 @@
 use mpv_client;
 use std::io;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::io::{AsyncWrite, AsyncRead};
@@ -116,10 +117,57 @@ impl core::ops::Deref for EventBroadcaster {
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()
     }
-
 }
 
-pub async fn handle_client_connection<T>(mut ws: WebSocketServer<T>, mut event_chan: broadcast::Receiver<Event>) -> Result<(), io::Error>
+pub struct CmdHandle<'a>(&'a mut mpv_client::Handle);
+
+impl<'a> CmdHandle<'a> {
+    /// DO NOT CALL WILL PANIC
+    /// this is a hack on a hack
+    /// CmdHandle wraps mpv_client::Handle and should be able to call all methods except this one as it
+    /// is not thread safe. The function calls cannot be wrapped manually due to the mpv_client::Format
+    /// trait not being exported. Deref is used to get around, but that would also expose 
+    /// mpv_client::Handle::wait_event method. This is here to overwrite that function. The body of
+    /// this function contains a single panic!()
+    #[deprecated]
+    #[allow(dead_code)]
+    pub fn wait_event(&mut self, _timeout: f64) -> mpv_client::Event {
+        panic!()
+    }
+}
+
+impl<'a> Deref for CmdHandle<'a> {
+    type Target = mpv_client::Handle;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+// This is fine according to the mpv docs (mpv/include/mpv/client.h - line 133)
+unsafe impl<'a> Send for CmdHandle<'a> {}
+unsafe impl<'a> Sync for CmdHandle<'a> {}
+
+pub struct EventHandle<'a>(&'a mut mpv_client::Handle);
+
+impl<'a> EventHandle<'a> {
+    pub fn wait_event(&mut self, timeout: f64) -> mpv_client::Event {
+        self.0.wait_event(timeout)
+    }
+}
+
+pub fn SplitHandle(handle: &mut mpv_client::Handle) -> (EventHandle, CmdHandle) {
+    unsafe {
+        let ptr = handle.as_mut_ptr();
+        (EventHandle(mpv_client::Handle::from_ptr(ptr.clone())),
+         CmdHandle(mpv_client::Handle::from_ptr(ptr)))
+    }
+    
+}
+
+pub async fn handle_client_connection<T>(
+    mut ws: WebSocketServer<T>, 
+    cmd_handle: Arc<CmdHandle<'_>>, 
+    mut event_chan: broadcast::Receiver<Event>) -> Result<(), io::Error>
 where
     T: AsyncRead + AsyncWrite + Unpin
 {

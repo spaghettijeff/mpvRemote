@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use crate::{plugin, websocket};
-use crate::plugin::{EventBroadcaster, EventSubscriber};
+use crate::plugin::{CmdHandle, EventBroadcaster, EventSubscriber};
 
 
 const INDEX_HTML: &[u8] = include_bytes!("../www/index.html");
@@ -146,20 +146,22 @@ impl<'a> Response<'a> {
     }
 }
 
-pub async fn bind_and_listen(subscriber: EventSubscriber) -> Result<(), io::Error>{
+pub async fn bind_and_listen(cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>{
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    let cmd_handle = Arc::new(cmd_handle);
     loop {
+        let cmd_handle = cmd_handle.clone();
         let (mut stream, _addr) = continue_on_err!(listener.accept().await);
         let sub = subscriber.clone();
         tokio::spawn(async move {
             let request = Request::parse(&mut stream).await.unwrap();
             //dbg!(&request);
-            let _ = handle_request(request, stream, sub).await;
+            let _ = handle_request(request, stream, cmd_handle, sub).await;
         });
     }
 }
 
-async fn handle_request<T>(request: Request, mut stream: T, subscriber: EventSubscriber) -> Result<(), io::Error>
+async fn handle_request<T>(request: Request, mut stream: T, cmd_handle: Arc<CmdHandle<'static>>, subscriber: EventSubscriber) -> Result<(), io::Error>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -191,7 +193,7 @@ where
         "/socket" => {
             tokio::spawn(async move {
                 let ws = websocket::WebSocketServer::handshake(request, stream).await?;
-                plugin::handle_client_connection(ws, subscriber()).await?;
+                plugin::handle_client_connection(ws, cmd_handle, subscriber()).await?;
                 Ok::<(), io::Error>(()) //complier warning but required for return type 
             });
             Ok(())
