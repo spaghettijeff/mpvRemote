@@ -1,18 +1,23 @@
 use mpv_client;
-use std::io;
+use std::{i64, io};
+use std::path::Path;
+use std::env::current_dir;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio::io::{AsyncWrite, AsyncRead};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use serde_json::{json, Value};
+use serde::{Serialize, Deserialize};
 
-use crate::websocket::WebSocketServer;
 
+use crate::websocket::{WebSocketServer, Message};
 
 #[repr(u64)]
-enum ObservedPropID {
+pub enum ObservedPropID {
     Pause = 1,
     Fullscreen,
     Playlist,
+    Volume,
 }
 
 impl TryFrom<u64> for ObservedPropID {
@@ -22,6 +27,7 @@ impl TryFrom<u64> for ObservedPropID {
             1 => Ok(ObservedPropID::Pause),
             2 => Ok(ObservedPropID::Fullscreen),
             3 => Ok(ObservedPropID::Playlist),
+            4 => Ok(ObservedPropID::Volume),
             n => Err(io::Error::new(io::ErrorKind::Other, format!("invalid ObsevedPropID: expected 1-3, found: {n}"))),
         }
     }
@@ -33,7 +39,18 @@ impl ToString for ObservedPropID {
             Self::Pause => "pause",
             Self::Fullscreen => "fullscreen",
             Self::Playlist => "playlist",
+            Self::Volume => "ao-volume",
         }.to_string()
+    }
+}
+
+impl ObservedPropID {
+    pub fn observe_all(cmd_handle: &mut CmdHandle) -> mpv_client::Result<()> {
+        cmd_handle.observe_property::<bool>(Self::Pause as u64, Self::Pause.to_string())?;
+        cmd_handle.observe_property::<bool>(Self::Fullscreen as u64, Self::Fullscreen.to_string())?;
+        cmd_handle.observe_property::<String>(Self::Playlist as u64, Self::Playlist.to_string())?;
+        //cmd_handle.observe_property::<i64>(Self::Volume as u64, Self::Volume.to_string())?;
+        Ok(())
     }
 }
 
@@ -77,6 +94,13 @@ impl PropertyEvent {
                 name: id.to_string(), 
                 data: PropertyData::String(value.data::<String>().ok_or(io::Error::new(io::ErrorKind::Other, "expected observed property \"playlist\" to have type String"))?),
             },
+            ObservedPropID::Volume => PropertyEvent { 
+                name: id.to_string(), 
+                data: PropertyData::Int(value.data::<i64>()
+                    .ok_or(io::Error::new(
+                            io::ErrorKind::Other, 
+                            "expected observed property \"volume\" to have type i64"))?),
+            },
         };
         Ok(result)
     }
@@ -90,7 +114,13 @@ impl Event {
             mpv_client::Event::EndFile(_) => Event::EndFile,
             mpv_client::Event::Seek => Event::Seek,
             mpv_client::Event::PlaybackRestart => Event::Seek,
-            mpv_client::Event::PropertyChange(id, property) => Event::PropertyChange(PropertyEvent::from_mpv_client(&property, *id).unwrap()),
+            mpv_client::Event::PropertyChange(id, property) => {
+                let e = PropertyEvent::from_mpv_client(&property, *id);
+                match e {
+                    Ok(e) => Event::PropertyChange(e),
+                    Err(_) => return None,
+                }
+            }
             _ => return None
         };
         Some(result)
@@ -143,6 +173,21 @@ impl<'a> Deref for CmdHandle<'a> {
     }
 }
 
+impl<'a> DerefMut for CmdHandle<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+
+impl<'a> Clone for CmdHandle<'a> {
+    fn clone(&self) -> Self {
+        unsafe {
+            let ptr = self.0.as_ptr().clone();
+            CmdHandle(mpv_client::Handle::from_ptr(ptr.cast_mut()))
+        }
+    }
+}
+
 // This is fine according to the mpv docs (mpv/include/mpv/client.h - line 133)
 unsafe impl<'a> Send for CmdHandle<'a> {}
 unsafe impl<'a> Sync for CmdHandle<'a> {}
@@ -164,22 +209,167 @@ pub fn SplitHandle(handle: &mut mpv_client::Handle) -> (EventHandle, CmdHandle) 
     
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct WebEvent {
+    event: String,
+    data: Option<Value>,
+}
+
 pub async fn handle_client_connection<T>(
     mut ws: WebSocketServer<T>, 
-    cmd_handle: Arc<CmdHandle<'_>>, 
+    cmd_handle: &mut CmdHandle<'_>, 
     mut event_chan: broadcast::Receiver<Event>) -> Result<(), io::Error>
 where
     T: AsyncRead + AsyncWrite + Unpin
 {
+    let mut msg_buffer = String::new();
     loop {
+        msg_buffer.clear();
         tokio::select! {
             mpv_msg = event_chan.recv() => {
-                println!("MPV Event");
+                println!("MPV Event: {:?}", mpv_msg.unwrap());
             },
             client_msg = ws.get_message() => {
-                println!("Client Event")
+                match client_msg.unwrap().read_to_string(&mut msg_buffer).await {
+                    Ok(_) => (),
+                    Err(_) => return Ok(()),
+                };
+                let msg: WebEvent = serde_json::from_str(msg_buffer.as_str()).unwrap();
+                handle_webclient(msg, cmd_handle, &mut ws).await;
             },
         }
     }
-    Ok(())
+}
+
+async fn handle_webclient<T>(payload: WebEvent, handle: &mut CmdHandle<'_>, ws: &mut WebSocketServer<T>) 
+where
+    T: AsyncRead + AsyncWrite + Unpin
+{
+    dbg!(&payload);
+    match payload.event.as_str() {
+        "toggle-play" => {
+            let paused: bool = handle.get_property("pause").unwrap();
+            handle.set_property("pause", !paused);
+        },
+        "toggle-fullscreen" => {
+            let fullscreen: bool = handle.get_property("fullscreen").unwrap();
+            handle.set_property("fullscreen", !fullscreen);
+        },
+        "volume" => {
+            let vol = match payload.data {
+                Some(Value::String(n)) => n,
+                _ => return,
+            }.parse::<i64>().unwrap();
+            // volume cannot be observed until audio is loaded
+            // TODO fix this 
+            let _ = handle.observe_property::<i64>(
+                ObservedPropID::Volume as u64,
+                ObservedPropID::Volume.to_string());
+            handle.set_property("ao-volume", vol);
+        },
+        "get-status" => {
+            let duration = handle.get_property::<f64>("duration").unwrap();
+            let title = handle.get_property::<String>("media-title").unwrap();
+            let fullscreen = handle.get_property::<bool>("fullscreen").unwrap();
+            let pause = handle.get_property::<bool>("pause").unwrap();
+            let playlist: Value = serde_json::from_str(&handle.get_property::<String>("playlist").unwrap()).unwrap();
+            let time_pos = handle.get_property::<f64>("time-pos").unwrap();
+            let volume = handle.get_property::<i64>("ao-volume").unwrap();
+            let response = json!({
+                "event": "status",
+                "data": {
+                    "duration": duration,
+                    "media-title": title,
+                    "fullscreen": fullscreen,
+                    "pause": pause,
+                    "playlist": playlist,
+                    "time-pos": time_pos,
+                    "volume": volume,
+                }
+            });
+            ws.send_message(serde_json::to_string(&response).unwrap().as_str().into()).await;
+            },
+
+        "seek" => {
+            let data = match payload.data {
+                Some(Value::Object(v)) => v,
+                _ => return,
+            };
+            if let Some(Value::Number(n)) = data.get("relative") {
+                handle.command(["seek", format!("{}", n).as_str(), "relative"]);
+            } else if let Some(Value::Number(n)) = data.get("absolute") {
+                handle.command(["seek", format!("{}", n).as_str(), "absolute"]);
+            } else {
+                return
+            }
+        },
+        "skip" => {
+            let data = match payload.data {
+                Some(Value::String(n)) => n,
+                _ => return,
+            };
+            handle.command([format!("playlist-{data}")]);
+        },
+        "play-now" => {
+            let data = match payload.data {
+                Some(Value::Object(v)) => v,
+                _ => return,
+            };
+            if let Some(Value::String(url)) = data.get("url") {
+                handle.command(["loadfile", url, "replace"]);
+            } 
+            if let Some(Value::Object(file)) = data.get("file") {
+                let dir = file.get("dir").unwrap();
+                let name = file.get("name").unwrap();
+                let mut path = current_dir().unwrap();
+                path.push(Path::new(dir.as_str().unwrap()));
+                path.push(Path::new(name.as_str().unwrap()));
+                handle.command(["loadfile", path.to_str().unwrap(), "replace"]);
+            }
+        },
+        "playlist-add" => {
+            let data = match payload.data {
+                Some(Value::Object(v)) => v,
+                _ => return,
+            };
+            if let Some(Value::String(url)) = data.get("url") {
+                handle.command(["loadfile", url, "append-play"]);
+            } 
+            if let Some(Value::Object(file)) = data.get("file") {
+                let dir = file.get("dir").unwrap();
+                let name = file.get("name").unwrap();
+                let mut path = current_dir().unwrap();
+                path.push(Path::new(dir.as_str().unwrap()));
+                path.push(Path::new(name.as_str().unwrap()));
+                handle.command(["loadfile", path.to_str().unwrap(), "append-play"]);
+            }
+        },
+        "playlist-remove" => {
+            let idx = match payload.data {
+                Some(Value::Number(n)) => n.as_i64().unwrap(),
+                _ => return,
+            };
+            handle.command(["playlist-remove", &format!("{idx}")]);
+        },
+        "playlist-move" => {
+            let ids = match payload.data {
+                Some(Value::Array(arr)) => arr,
+                _ => return,
+            };
+            let id_1 = ids[0].as_i64().unwrap();
+            let mut id_2 = ids[1].as_i64().unwrap();
+            if id_1 < id_2 {
+                id_2 += 1;
+            }
+            handle.command(["playlist-move", &format!("{id_1}"), &format!("{id_2}")]);
+        },
+        "shutdown" => {
+            handle.command(["quit"]);
+        },
+        "stop" => {
+            handle.command(["write-watch-later-config"]);
+            handle.command(["stop"]);
+        },
+        _ => return,
+    }
 }

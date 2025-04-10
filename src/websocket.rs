@@ -89,12 +89,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
 #[derive(Debug)]
 pub struct Message<T: AsyncRead + Unpin> {
     data: Take<T>,
-    r#type: MessageType,
+    pub r#type: MessageType,
 }
 
 type CloseStatus = u16;
 #[derive(Debug, Clone, Copy)]
-enum MessageType {
+pub enum MessageType {
     Text,
     Binary,
     Ping,
@@ -206,6 +206,7 @@ impl TryFrom<u8> for OpCode {
             x if x == Cont as u8 => Ok(Cont),
             x if x == Text as u8 => Ok(Text),
             x if x == Binary as u8 => Ok(Binary),
+            x if x == Close as u8 => Ok(Close),
             x if x == Ping as u8 => Ok(Ping),
             x if x == Pong as u8 => Ok(Pong),
             x => Err(io::Error::new(io::ErrorKind::Other, format!("illegal Op Code: {x}"))),

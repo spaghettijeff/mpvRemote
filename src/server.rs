@@ -148,7 +148,6 @@ impl<'a> Response<'a> {
 
 pub async fn bind_and_listen(cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>{
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
-    let cmd_handle = Arc::new(cmd_handle);
     loop {
         let cmd_handle = cmd_handle.clone();
         let (mut stream, _addr) = continue_on_err!(listener.accept().await);
@@ -161,7 +160,7 @@ pub async fn bind_and_listen(cmd_handle: CmdHandle<'static>, subscriber: EventSu
     }
 }
 
-async fn handle_request<T>(request: Request, mut stream: T, cmd_handle: Arc<CmdHandle<'static>>, subscriber: EventSubscriber) -> Result<(), io::Error>
+async fn handle_request<T>(request: Request, mut stream: T, mut cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -192,9 +191,10 @@ where
             },
         "/socket" => {
             tokio::spawn(async move {
+                dbg!("CREATED NEW WEBSOCKET CONNECTION");
                 let ws = websocket::WebSocketServer::handshake(request, stream).await?;
-                plugin::handle_client_connection(ws, cmd_handle, subscriber()).await?;
-                Ok::<(), io::Error>(()) //complier warning but required for return type 
+                plugin::handle_client_connection(ws, &mut cmd_handle, subscriber()).await?;
+                Ok::<(), io::Error>(())
             });
             Ok(())
         },

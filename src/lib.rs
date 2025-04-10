@@ -9,9 +9,12 @@ use tokio::runtime::Runtime;
 #[no_mangle]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let handle = Handle::from_ptr(handle);
-    let (mut event_handle, cmd_handle) = SplitHandle(handle);
+    let (mut event_handle, mut cmd_handle) = SplitHandle(handle);
+
     let event_chan = EventBroadcaster::new(32);
     let subscriber = event_chan.subscriber();
+
+    plugin::ObservedPropID::observe_all(&mut cmd_handle).unwrap();
 
     let rt = Runtime::new().unwrap();
     rt.spawn(async move {
