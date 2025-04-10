@@ -57,11 +57,12 @@ impl ObservedPropID {
 #[derive(Debug, Clone)]
 pub enum Event {
     Shutdown,
-    StartFile(i64), // playlist index
+    FileLoaded,
     EndFile,
     Seek, // A seek is started
     PlaybackRestart, // A seek is stopped
     PropertyChange(PropertyEvent),
+    PlaybackTime(f64),
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +71,17 @@ pub enum PropertyData {
     Bool(bool),
     Int(i64),
     Float(f64),
+}
+
+impl std::fmt::Display for PropertyData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String(w) => write!(f, "{w}"),
+            Self::Bool(w) => write!(f, "{w}"),
+            Self::Int(w) => write!(f, "{w}"),
+            Self::Float(w) => write!(f, "{w}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +122,7 @@ impl Event {
     pub fn from_mpv_client(value: &mpv_client::Event) -> Option<Self> {
         let result = match value {
             mpv_client::Event::Shutdown => Event::Shutdown,
-            mpv_client::Event::StartFile(start) => Event::StartFile(start.playlist_entry_id()),
+            mpv_client::Event::FileLoaded => Event::FileLoaded,
             mpv_client::Event::EndFile(_) => Event::EndFile,
             mpv_client::Event::Seek => Event::Seek,
             mpv_client::Event::PlaybackRestart => Event::Seek,
@@ -227,12 +239,91 @@ where
         msg_buffer.clear();
         tokio::select! {
             mpv_msg = event_chan.recv() => {
-                println!("MPV Event: {:?}", mpv_msg.unwrap());
+                let mpv_msg = mpv_msg.unwrap();
+                println!("MPV Event: {mpv_msg:?}");
+                match mpv_msg {
+                    Event::PropertyChange(PropertyEvent { name, data }) => {
+                        match name.as_str() {
+                            "pause" => {
+                                let data = match data {
+                                    PropertyData::Bool(b) => b,
+                                    _ => continue,
+                                };
+                                let payload = json!({
+                                    "event": name,
+                                    "data": data,
+                                });
+                                let payload_str = serde_json::to_string(&payload).unwrap();
+                                ws.send_message(payload_str.as_str().into()).await;
+                            },
+                            "fullscreen" => {
+                                let data = match data {
+                                    PropertyData::Bool(b) => b,
+                                    _ => continue,
+                                };
+                                let payload = json!({
+                                    "event": name,
+                                    "data": data,
+                                });
+                                let payload_str = serde_json::to_string(&payload).unwrap();
+                                ws.send_message(payload_str.as_str().into()).await;
+                            },
+                            "file-loaded" => {
+                            },
+                            "playlist" => {
+                                let data = match data {
+                                    PropertyData::String(s) => s,
+                                    _ => continue,
+                                };
+                                let playlist_json: Value = serde_json::from_str(&data).unwrap();
+                                let payload = json!({
+                                    "event": name,
+                                    "data": playlist_json,
+                                });
+                                let payload_str = serde_json::to_string(&payload).unwrap();
+                                ws.send_message(payload_str.as_str().into()).await;
+                            },
+                            _ => (),
+                        }
+                    },
+                    Event::FileLoaded => {
+                        let duration = cmd_handle.get_property::<f64>("duration").unwrap();
+                        let title = cmd_handle.get_property::<String>("media-title").unwrap();
+                        let fullscreen = cmd_handle.get_property::<bool>("fullscreen").unwrap();
+                        let pause = cmd_handle.get_property::<bool>("pause").unwrap();
+                        let playlist: Value = serde_json::from_str(&cmd_handle.get_property::<String>("playlist").unwrap()).unwrap();
+                        let time_pos = cmd_handle.get_property::<f64>("time-pos").unwrap();
+                        let volume = cmd_handle.get_property::<i64>("ao-volume").unwrap();
+                        let response = json!({
+                            "event": "status",
+                            "data": {
+                                "duration": duration,
+                                "media-title": title,
+                                "fullscreen": fullscreen,
+                                "pause": pause,
+                                "playlist": playlist,
+                                "time-pos": time_pos,
+                                "volume": volume,
+                            }
+                        });
+                        ws.send_message(serde_json::to_string(&response).unwrap().as_str().into()).await;
+                    },
+                    Event::PlaybackTime(time) => {
+                        let payload = json!({
+                            "event": "time-pos",
+                            "data": time,
+                        });
+                        let payload_str = serde_json::to_string(&payload).unwrap();
+                        ws.send_message(payload_str.as_str().into()).await;
+
+                    }
+                    _ => ()
+                };
             },
             client_msg = ws.get_message() => {
                 match client_msg.unwrap().read_to_string(&mut msg_buffer).await {
                     Ok(_) => (),
-                    Err(_) => return Ok(()),
+                    Err(_) => continue,
                 };
                 let msg: WebEvent = serde_json::from_str(msg_buffer.as_str()).unwrap();
                 handle_webclient(msg, cmd_handle, &mut ws).await;
@@ -289,7 +380,6 @@ where
             });
             ws.send_message(serde_json::to_string(&response).unwrap().as_str().into()).await;
             },
-
         "seek" => {
             let data = match payload.data {
                 Some(Value::Object(v)) => v,
