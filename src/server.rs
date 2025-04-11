@@ -146,8 +146,11 @@ impl<'a> Response<'a> {
     }
 }
 
-pub async fn bind_and_listen(cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>{
-    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+pub async fn bind_and_listen<A>(addr: A, cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>
+    where
+        A: tokio::net::ToSocketAddrs
+{
+    let listener = TcpListener::bind(addr).await?;
     loop {
         let cmd_handle = cmd_handle.clone();
         let (mut stream, _addr) = continue_on_err!(listener.accept().await);

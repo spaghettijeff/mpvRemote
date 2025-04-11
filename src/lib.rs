@@ -1,6 +1,7 @@
 mod server;
 mod websocket;
 mod plugin;
+mod config;
 
 use mpv_client::{mpv_handle, Event, Handle};
 use plugin::{EventBroadcaster, SplitHandle};
@@ -9,6 +10,13 @@ use tokio::time::{self, Duration};
 
 #[no_mangle]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
+    let config = match config::Config::load() {
+        Ok(conf) => conf,
+        Err(e) => {
+            println!("Error loading config: {e}. Using default");
+            config::Config::default()
+        },
+    };
     let handle = Handle::from_ptr(handle);
     let (mut event_handle, mut cmd_handle) = SplitHandle(handle);
 
@@ -33,7 +41,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     });
     // webserver
     rt.spawn(async move {
-        match server::bind_and_listen(cmd_handle, subscriber).await {
+        match server::bind_and_listen((config.host, config.port), cmd_handle, subscriber).await {
         Ok(_) => (),
         Err(e) => println!("Error: {e}"),
         }
