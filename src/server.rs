@@ -1,13 +1,11 @@
 use core::str;
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 use crate::{plugin, websocket};
-use crate::plugin::{CmdHandle, EventBroadcaster, EventSubscriber};
+use crate::plugin::{CmdHandle, EventSubscriber};
 
 
 const INDEX_HTML: &[u8] = include_bytes!("../www/index.html");
@@ -19,7 +17,7 @@ macro_rules! continue_on_err {
     ($expression:expr) => {
         match $expression {
             Ok(val) => val,
-            Err(e) => { println!("Error:\t{e:#?}"); continue; },
+            Err(_) => { continue; },
         }
     };
 }
@@ -157,7 +155,6 @@ pub async fn bind_and_listen<A>(addr: A, cmd_handle: CmdHandle<'static>, subscri
         let sub = subscriber.clone();
         tokio::spawn(async move {
             let request = Request::parse(&mut stream).await.unwrap();
-            //dbg!(&request);
             let _ = handle_request(request, stream, cmd_handle, sub).await;
         });
     }

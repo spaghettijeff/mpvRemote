@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use serde::{Serialize, Deserialize};
 
 
-use crate::websocket::{WebSocketServer, Message};
+use crate::websocket::WebSocketServer;
 
 #[repr(u64)]
 pub enum ObservedPropID {
@@ -240,7 +240,6 @@ where
         tokio::select! {
             mpv_msg = event_chan.recv() => {
                 let mpv_msg = mpv_msg.unwrap();
-                println!("MPV Event: {mpv_msg:?}");
                 match mpv_msg {
                     Event::PropertyChange(PropertyEvent { name, data }) => {
                         match name.as_str() {
@@ -336,7 +335,6 @@ async fn handle_webclient<T>(payload: WebEvent, handle: &mut CmdHandle<'_>, ws: 
 where
     T: AsyncRead + AsyncWrite + Unpin
 {
-    dbg!(&payload);
     match payload.event.as_str() {
         "toggle-play" => {
             let paused: bool = handle.get_property("pause").unwrap();

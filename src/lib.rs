@@ -54,7 +54,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
                 let evt = plugin::Event::from_mpv_client(&evt);
                 match evt {
                     Some(e) => {
-                        let _ = dbg!(event_chan.send(e));
+                        let _ = event_chan.send(e);
                     },
                     None => continue,
                 }
