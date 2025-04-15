@@ -1,5 +1,6 @@
 use crate::server::{Request, Response};
-use std::io;
+use anyhow::{Result, anyhow, bail};
+use std::{fmt::Debug, io};
 use tokio::io::{copy, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Take};
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use sha1::{self, Digest};
@@ -14,9 +15,15 @@ pub struct WebSocketClient<T: AsyncRead + AsyncWrite>(T);
 #[allow(dead_code)]
 pub struct WebSocketServer<T: AsyncRead + AsyncWrite>(T);
 
+impl<T: AsyncRead + AsyncWrite + Unpin + Debug> Debug for WebSocketServer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WebSocketServer: {:?}", self.0)
+    }
+}
+
 #[allow(dead_code)]
 impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
-    pub async fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>, io::Error> {
+    pub async fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>> {
         let ws_key = request.headers.get("Sec-WebSocket-Key")
             .ok_or(io::Error::new(io::ErrorKind::Other, "Sec-WebSocket-Key header not found in request"))?;
         let mut hasher = sha1::Sha1::new();
@@ -30,7 +37,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
         Ok(WebSocketServer(stream))
     }
 
-    pub async fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>, io::Error> {
+    pub async fn get_message<'a>(&'a mut self) -> Result<Message<Frame<'a, T>>> {
         let mut frame = Frame::deserialize(&mut self.0).await?;
         let mut len = frame.payload_len;
         let m_type = match frame.opcode {
@@ -43,7 +50,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
                 len -= size_of::<CloseStatus>() as u64;
                 MessageType::Close(code)
             },
-            OpCode::Cont => todo!(),
+            OpCode::Cont => bail!("continuation messages not implemented"),
         };
         Ok(Message{
             data: frame.take(len),
@@ -51,7 +58,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
         })
     }
 
-    pub async fn send_message<R: AsyncRead + Unpin>(&mut self, mut msg: Message<R>) -> Result<u64, io::Error> {
+    pub async fn send_message<R: AsyncRead + Unpin>(&mut self, mut msg: Message<R>) -> Result<u64> {
         let opcode: OpCode = msg.r#type.into();
         match msg.r#type {
             MessageType::Close(code) => {
@@ -67,7 +74,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
                     payload: &mut code_bytes.chain(&mut msg.data),
                 };
                 let mut frame_data = frame.serialize();
-                copy(&mut frame_data, &mut self.0).await
+                let n = copy(&mut frame_data, &mut self.0).await?;
+                Ok(n)
             }
             _ => {
                 let payload_len = msg.data.limit();
@@ -80,7 +88,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
                     payload: &mut msg.data,
                 };
                 let mut frame_data = frame.serialize();
-                copy(&mut frame_data, &mut self.0).await
+                let n = copy(&mut frame_data, &mut self.0).await?;
+                Ok(n)
             },
         }
     }
@@ -199,7 +208,7 @@ pub enum OpCode {
 }
 
 impl TryFrom<u8> for OpCode {
-    type Error = io::Error;
+    type Error = anyhow::Error;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         use OpCode::*;
         match value { // disgusting there must be a better way
@@ -209,7 +218,7 @@ impl TryFrom<u8> for OpCode {
             x if x == Close as u8 => Ok(Close),
             x if x == Ping as u8 => Ok(Ping),
             x if x == Pong as u8 => Ok(Pong),
-            x => Err(io::Error::new(io::ErrorKind::Other, format!("illegal Op Code: {x}"))),
+            x => Err(anyhow!("illegal Op Code: {x}")),
         }
     }
 }
@@ -252,7 +261,7 @@ impl<'a, T: AsyncRead + Unpin> AsyncRead for Frame<'a, T> {
 }
 
 impl<'a, T: AsyncRead + AsyncReadExt + Unpin> Frame<'a, T> {
-    async fn deserialize(stream: &'a mut T) -> Result<Frame<'a, T>, io::Error> {
+    async fn deserialize(stream: &'a mut T) -> Result<Frame<'a, T>> {
         let mut buffer = [0; 8];
         stream.take(2).read(&mut buffer).await?;
         let fin: bool = (0b10000000 & buffer[0]) != 0;

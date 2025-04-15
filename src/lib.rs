@@ -1,19 +1,22 @@
 mod server;
 mod websocket;
+mod mpv;
 mod plugin;
 mod config;
+mod logger;
 
 use mpv_client::{mpv_handle, Event, Handle};
-use plugin::{EventBroadcaster, SplitHandle};
+use mpv::{EventBroadcaster, SplitHandle};
 use tokio::runtime::Runtime;
 use tokio::time::{self, Duration};
 
 #[no_mangle]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
+
     let config = match config::Config::load() {
         Ok(conf) => conf,
         Err(e) => {
-            println!("Error loading config: {e}. Using default");
+            logger::warning!("loading config: {e}. Using default options");
             config::Config::default()
         },
     };
@@ -22,7 +25,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
 
     let event_chan = EventBroadcaster::new(32);
     let subscriber = event_chan.subscriber();
-    plugin::ObservedPropID::observe_all(&mut cmd_handle).unwrap();
+    mpv::ObservedPropID::observe_all(&mut cmd_handle).unwrap();
 
     let rt = Runtime::new().unwrap();
     // playback time
@@ -36,14 +39,14 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
                 Ok(time) => time,
                 Err(_) => continue,
             };
-            timer_broadcaster.send(plugin::Event::PlaybackTime(time_pos));
+            let _ = timer_broadcaster.send(mpv::Event::PropertyChange(mpv::Property::TimePos(time_pos)));
         }
     });
     // webserver
     rt.spawn(async move {
         match server::bind_and_listen((config.host, config.port), cmd_handle, subscriber).await {
         Ok(_) => (),
-        Err(e) => println!("Error: {e}"),
+        Err(e) => logger::error!("failed to start server: {e}"),
         }
     });
     // mpv event loop
@@ -51,7 +54,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
         match event_handle.wait_event(-1.) {
             Event::Shutdown => return 0,
             evt => {
-                let evt = plugin::Event::from_mpv_client(&evt);
+                let evt = mpv::unwrap_or_continue!(mpv::Event::from_mpv_client(&evt));
                 match evt {
                     Some(e) => {
                         let _ = event_chan.send(e);

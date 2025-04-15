@@ -1,11 +1,11 @@
 use core::str;
-use std::io;
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use crate::{plugin, websocket};
-use crate::plugin::{CmdHandle, EventSubscriber};
+use anyhow::{Result, anyhow};
+use crate::{logger, plugin, websocket};
+use crate::mpv::{CmdHandle, EventSubscriber};
 
 
 const INDEX_HTML: &[u8] = include_bytes!("../www/index.html");
@@ -31,20 +31,20 @@ pub struct Request {
 }
 
 impl Request {
-    async fn parse<T>(stream: &mut T) -> Result<Request, io::Error> 
+    async fn parse<T>(stream: &mut T) -> Result<Request> 
     where 
     T: AsyncRead + Unpin,
     {
         let mut lines = BufReader::new(stream);
         let mut buf = String::new();
         let first_line  = match lines.read_line(&mut buf).await {
-            Ok(0) => { return Err(io::Error::new(io::ErrorKind::Other, "unexpected EOF in http request")) },
-            Err(e) => { return Err(e) },
+            Ok(0) => { return Err(anyhow!("unexpected EOF in http request")) },
+            Err(e) => { return Err(e.into()) },
             Ok(_len) => &buf,
         };
         let (method, path, ver) = match first_line.split_whitespace().collect::<Vec<&str>>()[..] {
             [method, path, ver] => (method.to_string(), path.to_string(), ver.to_string()),
-            _ => return Err(io::Error::new(io::ErrorKind::Other, format!("invalid http request: \"{first_line}\""))),
+            _ => return Err(anyhow!("invalid http request")),
         };
 
         let mut headers: HashMap<String, String> = HashMap::new();
@@ -53,9 +53,9 @@ impl Request {
             let num_read = lines.read_line(&mut buf).await;
             if buf == "\r\n" { break }
             let (key, val) = match num_read {
-                Ok(0) => { return Err(io::Error::new(io::ErrorKind::Other, "unexpected EOF in http request")) },
-                Err(e) => { return Err(e) },
-                Ok(_len) => buf.split_once(':').ok_or(io::Error::new(io::ErrorKind::Other, format!("invalid header in http request \"{buf}\"")))?,
+                Ok(0) => { return Err(anyhow!("unexpected EOF in http request")) },
+                Err(e) => { return Err(e.into()) },
+                Ok(_len) => buf.split_once(':').ok_or(anyhow!("invalid header in http request"))?,
             };
         headers.insert(key.to_string(), val.trim().to_string());
         }
@@ -83,8 +83,8 @@ pub enum Method {
 }
 
 impl TryFrom<&str> for Method {
-    type Error = io::Error;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    type Error = anyhow::Error;
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         use Method::*;
         match value {
             "GET" => Ok(GET),
@@ -96,7 +96,7 @@ impl TryFrom<&str> for Method {
             "OPTIONS" => Ok(OPTIONS),
             "TRACE" => Ok(TRACE),
             "PATCH" => Ok(PATCH),
-            method => Err(io::Error::new(io::ErrorKind::Other, format!("invalid method {method}"))),
+            method => Err(anyhow!("invalid method {method}")),
         }
     }
 }
@@ -144,7 +144,7 @@ impl<'a> Response<'a> {
     }
 }
 
-pub async fn bind_and_listen<A>(addr: A, cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>
+pub async fn bind_and_listen<A>(addr: A, cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<()>
     where
         A: tokio::net::ToSocketAddrs
 {
@@ -160,48 +160,53 @@ pub async fn bind_and_listen<A>(addr: A, cmd_handle: CmdHandle<'static>, subscri
     }
 }
 
-async fn handle_request<T>(request: Request, mut stream: T, mut cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<(), io::Error>
+async fn handle_request<T>(request: Request, mut stream: T, mut cmd_handle: CmdHandle<'static>, subscriber: EventSubscriber) -> Result<()>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static + Debug,
 {
     match request.path.as_str() {
         "/" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/html".into())
                 .body(INDEX_HTML);
-            stream.write_all(&response.bytes()).await
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
             },
         "/static/main.js" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/javascript".into())
                 .body(MAIN_JS);
-            stream.write_all(&response.bytes()).await
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
             },
         "/static/output.css" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/css".into())
                 .body(OUTPUT_CSS);
-            stream.write_all(&response.bytes()).await
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
             },
         "/static/symbols/material-symbols.woff2" => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "font/woff2".into())
                 .body(SYMBOLS_FONT);
-            stream.write_all(&response.bytes()).await
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
             },
         "/socket" => {
             tokio::spawn(async move {
-                dbg!("CREATED NEW WEBSOCKET CONNECTION");
                 let ws = websocket::WebSocketServer::handshake(request, stream).await?;
+                logger::debug!("new websocket connection: {ws:?}");
                 plugin::handle_client_connection(ws, &mut cmd_handle, subscriber()).await?;
-                Ok::<(), io::Error>(())
+                Ok::<(), anyhow::Error>(())
             });
             Ok(())
         },
         _path => {
             let response = Response::new("HTTP/1.1".into(), 404)
                 .header("Content-Type".into(), "text/html".into());
-            stream.write_all(&response.bytes()).await
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
             },
     }
 }
