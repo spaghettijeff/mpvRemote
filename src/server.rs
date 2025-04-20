@@ -1,9 +1,13 @@
 use core::str;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
+use std::path;
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::fs;
 use anyhow::{Result, anyhow};
+use crate::logger::{debug, warning};
 use crate::{logger, plugin, websocket};
 use crate::mpv::{CmdHandle, EventSubscriber};
 
@@ -20,6 +24,12 @@ macro_rules! continue_on_err {
             Err(_) => { continue; },
         }
     };
+}
+
+pub type Url<'a> = Vec<&'a str>;
+
+pub fn parse_url<'a>(url: &'a str) -> Url<'a> {
+    url.split("/").collect()
 }
 
 #[derive(Debug)]
@@ -164,36 +174,37 @@ async fn handle_request<T>(request: Request, mut stream: T, mut cmd_handle: CmdH
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static + Debug,
 {
-    match request.path.as_str() {
-        "/" => {
+    let url = parse_url(&request.path);
+    match &url[1 ..] {
+        [""] | ["", ""] => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/html".into())
                 .body(INDEX_HTML);
             stream.write_all(&response.bytes()).await?;
             Ok(())
             },
-        "/static/main.js" => {
+        ["static", "main.js"] => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/javascript".into())
                 .body(MAIN_JS);
             stream.write_all(&response.bytes()).await?;
             Ok(())
             },
-        "/static/output.css" => {
+        ["static", "output.css"] => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "text/css".into())
                 .body(OUTPUT_CSS);
             stream.write_all(&response.bytes()).await?;
             Ok(())
             },
-        "/static/symbols/material-symbols.woff2" => {
+        ["static", "symbols", "material-symbols.woff2"] => {
             let response = Response::new("HTTP/1.1".into(), 200)
                 .header("Content-Type".into(), "font/woff2".into())
                 .body(SYMBOLS_FONT);
             stream.write_all(&response.bytes()).await?;
             Ok(())
             },
-        "/socket" => {
+        ["socket"] => {
             tokio::spawn(async move {
                 let ws = websocket::WebSocketServer::handshake(request, stream).await?;
                 logger::debug!("new websocket connection: {ws:?}");
@@ -202,7 +213,37 @@ where
             });
             Ok(())
         },
-        _path => {
+        ["file-picker", rest @ ..] => {
+            let mut fpath = std::env::current_dir()?;
+            for f in rest {
+                fpath.push(f);
+            }
+            let mut entries = fs::read_dir(fpath).await?;
+            let mut dirs :Vec<String> = Vec::new();
+            let mut files :Vec<String> = Vec::new();
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name().into_string().map_err(|e| {anyhow!("unable to format OsString \"{e:?}\"")})?;
+                if entry.path().is_dir() {
+                    dirs.push(name);
+                } else if entry.path().is_file() {
+                    files.push(name);
+                } else {
+                    panic!("not a file or dir");
+                }
+            }
+            let payload = json!({
+                "dirs": dirs,
+                "files": files
+            }).to_string();
+            debug!("file picker {payload}");
+            let response = Response::new("HTTP/1.1".into(), 200)
+                .header("Content-Type".into(), "application/json".into())
+                .body(payload.as_bytes());
+            stream.write_all(&response.bytes()).await?;
+            Ok(())
+        },
+        path => {
+            warning!("bad request path not found \"{path:?}\"");
             let response = Response::new("HTTP/1.1".into(), 404)
                 .header("Content-Type".into(), "text/html".into());
             stream.write_all(&response.bytes()).await?;
