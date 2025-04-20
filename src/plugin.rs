@@ -79,7 +79,7 @@ where
                 };
             },
             client_msg = ws.get_message() => {
-                let mut client_msg = mpv::unwrap_or_continue!(client_msg);
+                let mut client_msg = client_msg?;
                 let _ = mpv::unwrap_or_continue!(client_msg.read_to_string(&mut msg_buffer).await);
                 let msg: WebEvent = mpv::unwrap_or_continue!(serde_json::from_str(msg_buffer.as_str()));
                 handle_webclient(msg, cmd_handle, &mut ws).await?;
