@@ -237,20 +237,26 @@ function renderPlaylist(playlist) {
 }
 
 async function renderDirectory(dir) {
-    dir = "/" + dir;
+    console.debug("Dir Picker: ", dir);
     const action = window.location.hash.substring(1);
-    const resp = await fetch("/file-picker" + dir);
+    const resp = await fetch("/file-picker/" + dir);
     const directory = await resp.json();
     let html = `<ul class="font-lg divide-y divide-gray-200 dark:divide-gray-700">`;
-    if (dir !== "/") {
+    if (dir !== "") {
         html += `
             <li class="p-2" onclick="renderDirectory('${dir}'.substr(0, '${dir}'.lastIndexOf('\/')))">../</li>
             `;
     }
     for (d of directory.dirs.sort()) {
-        html += `
-            <li class="p-2" onclick="renderDirectory('${dir}/${d}')">${d}/</li>
-            `;
+        if (dir === "") {
+            html += `
+                <li class="p-2" onclick="renderDirectory('${d}')">${d}</li>
+                `;
+        } else {
+            html += `
+                <li class="p-2" onclick="renderDirectory('${dir}/${d}')">${d}</li>
+                `;
+        }
     }
     for (f of directory.files.sort()) {
         html += `
