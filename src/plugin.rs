@@ -75,6 +75,18 @@ where
                         let msg = mpv::unwrap_or_continue!(serde_json::to_string(&response));
                         ws.send_message(msg.as_str().into()).await?;
                     },
+                    Event::Seek => {
+                        let time_pos = match cmd_handle.get_property::<f64>("time-pos") {
+                            Ok(time) => time,
+                            Err(_) => continue,
+                        };
+                        let payload = json!({
+                            "event": "time-pos",
+                            "data": time_pos,
+                        });
+                        let payload_str = serde_json::to_string(&payload)?;
+                        ws.send_message(payload_str.as_str().into()).await?;
+                    },
                     _ => ()
                 };
             },
