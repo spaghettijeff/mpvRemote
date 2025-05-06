@@ -298,6 +298,19 @@ const state = initState({
     "time-pos" : null,
     "volume" : null,
 });
+var timer = null;
+CallbackToBind = () => {
+    if (state["pause"]) {
+        clearInterval(timer)
+        timer = null;
+    } else if (timer === null) {
+        timer = setInterval(() => {
+            state["time-pos"] += 0.1;
+        }, 100)
+    }
+};
+state["pause"];
+CallbackToBind = null;
 
 initTabs(document);
 const socket = initSocket();

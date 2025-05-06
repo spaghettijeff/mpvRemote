@@ -32,7 +32,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let timer_broadcaster = event_chan.clone();
     let mut timer_handle = cmd_handle.clone();
     rt.spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(1));
+        let mut interval = time::interval(Duration::from_secs(10));
         loop {
             interval.tick().await;
             let time_pos = match timer_handle.get_property::<f64>("time-pos") {
