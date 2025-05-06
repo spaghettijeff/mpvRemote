@@ -75,6 +75,9 @@ where
                         let msg = mpv::unwrap_or_continue!(serde_json::to_string(&response));
                         ws.send_message(msg.as_str().into()).await?;
                     },
+                    Event::EndFile => {
+                        ws.send_message("{\"event\": \"pause\", \"data\": true}".into()).await?;
+                    },
                     Event::Seek => {
                         let time_pos = match cmd_handle.get_property::<f64>("time-pos") {
                             Ok(time) => time,

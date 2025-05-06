@@ -300,13 +300,13 @@ const state = initState({
 });
 var timer = null;
 CallbackToBind = () => {
-    if (state["pause"]) {
-        clearInterval(timer)
-        timer = null;
-    } else if (timer === null) {
+    if (state["pause"] === false && state["time-pos"] !== null && timer === null) {
         timer = setInterval(() => {
             state["time-pos"] += 0.1;
         }, 100)
+    } else {
+        clearInterval(timer)
+        timer = null;
     }
 };
 state["pause"];
