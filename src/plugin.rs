@@ -67,6 +67,14 @@ where
                                 let payload_str = serde_json::to_string(&payload)?;
                                 ws.send_message(payload_str.as_str().into()).await?;
                             },
+                            Property::CoreIdle(val) => {
+                                let payload = json!({
+                                    "event": property.name(),
+                                    "data": val,
+                                });
+                                let payload_str = serde_json::to_string(&payload)?;
+                                ws.send_message(payload_str.as_str().into()).await?;
+                            },
                             _ => (),
                         }
                     },

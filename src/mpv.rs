@@ -87,6 +87,7 @@ impl<'a> CmdHandle<'a> {
         let pause = self.get_property::<bool>("pause").ok();
         let time_pos = self.get_property::<f64>("time-pos").ok();
         let volume = self.get_property::<i64>("ao-volume").ok();
+        let core_idle = self.get_property::<bool>("core-idle").ok();
         let playlist: Option<serde_json::Value> = match self.get_property::<String>("playlist").ok() {
             Some(s) => serde_json::from_str(s.as_str()).ok(),
             None => None,
@@ -99,6 +100,7 @@ impl<'a> CmdHandle<'a> {
             "playlist": playlist,
             "time-pos": time_pos,
             "volume": volume,
+            "core-idle": core_idle,
         })
     }
 }
@@ -153,6 +155,7 @@ pub enum ObservedPropID {
     Playlist,
     Volume,
     TimePos,
+    CoreIdle,
 }
 
 impl TryFrom<u64> for ObservedPropID {
@@ -164,6 +167,7 @@ impl TryFrom<u64> for ObservedPropID {
             3 => Ok(ObservedPropID::Playlist),
             4 => Ok(ObservedPropID::Volume),
             5 => Ok(ObservedPropID::TimePos),
+            6 => Ok(ObservedPropID::CoreIdle),
             n => Err(anyhow!("invalid ObsevedPropID: expected 1-3, found: {n}")),
         }
     }
@@ -178,6 +182,7 @@ impl TryFrom<&str> for ObservedPropID {
             "playlist" => Self::Playlist,
             "ao-volume" => Self::Volume,
             "time-pos" => Self::TimePos,
+            "core-idle" => Self::CoreIdle,
             _ => return Err(anyhow!("bad name")),
         };
         Ok(result)
@@ -192,6 +197,7 @@ impl ToString for ObservedPropID {
             Self::Playlist => "playlist",
             Self::Volume => "ao-volume",
             Self::TimePos => "time-pos",
+            Self::CoreIdle => "core-idle",
         }.to_string()
     }
 }
@@ -201,6 +207,7 @@ impl ObservedPropID {
         cmd_handle.observe_property::<bool>(Self::Pause as u64, Self::Pause.to_string()).map_err(|e| { anyhow!("{e}") })?;
         cmd_handle.observe_property::<bool>(Self::Fullscreen as u64, Self::Fullscreen.to_string()).map_err(|e| { anyhow!("{e}") })?;
         cmd_handle.observe_property::<String>(Self::Playlist as u64, Self::Playlist.to_string()).map_err(|e| { anyhow!("{e}") })?;
+        cmd_handle.observe_property::<bool>(Self::CoreIdle as u64, Self::CoreIdle.to_string()).map_err(|e| { anyhow!("{e}") })?;
         //cmd_handle.observe_property::<i64>(Self::Volume as u64, Self::Volume.to_string()).map_err(|e| { anyhow!("{e}") })?;
         Ok(())
     }
@@ -213,6 +220,7 @@ pub enum Property {
     Playlist(serde_json::Value),
     Volume(i64),
     TimePos(f64),
+    CoreIdle(bool),
 }
 
 impl Property {
@@ -223,6 +231,7 @@ impl Property {
             Self::Playlist(_) => "playlist",
             Self::Volume(_) => "ao-volume",
             Self::TimePos(_) => "time-pos",
+            Self::CoreIdle(_) => "core-idle",
         } 
     }
 
@@ -238,6 +247,7 @@ impl Property {
             },
             ObservedPropID::Volume => Self::Volume(value.data().ok_or(anyhow!("no value in volume"))?),
             ObservedPropID::TimePos => Self::TimePos(value.data().ok_or(anyhow!("no value"))?),
+            ObservedPropID::CoreIdle => Self::CoreIdle(value.data().ok_or(anyhow!("no value"))?),
         };
         Ok(result)
     }

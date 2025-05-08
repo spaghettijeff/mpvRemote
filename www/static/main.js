@@ -296,11 +296,12 @@ const state = initState({
     "pause" : null,
     "playlist" : null,
     "time-pos" : null,
+    "core-idle" : null,
     "volume" : null,
 });
 var timer = null;
 CallbackToBind = () => {
-    if (state["pause"] === false && timer === null) {
+    if (state["pause"] === false && state["core-idle"] === false && timer === null) {
         timer = setInterval(() => {
             state["time-pos"] += 0.1;
         }, 100)
@@ -310,6 +311,7 @@ CallbackToBind = () => {
     }
 };
 state["pause"];
+state["core-idle"]
 CallbackToBind = null;
 
 initTabs(document);
