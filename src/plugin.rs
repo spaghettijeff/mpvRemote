@@ -26,6 +26,18 @@ where
     loop {
         msg_buffer.clear();
         tokio::select! {
+            _time_sync_sleep = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                let time_pos = match cmd_handle.get_property::<f64>("time-pos") {
+                    Ok(time) => time,
+                    Err(_) => continue,
+                };
+                let payload = json!({
+                    "event": "time-pos",
+                    "data": time_pos,
+                });
+                let payload_str = serde_json::to_string(&payload)?;
+                ws.send_message(payload_str.as_str().into()).await?;
+            }
             mpv_msg = event_chan.recv() => {
                 let mpv_msg = mpv_msg?;
                 match mpv_msg {
@@ -48,14 +60,6 @@ where
                                 ws.send_message(payload_str.as_str().into()).await?;
                             },
                             Property::Playlist(ref val) => {
-                                let payload = json!({
-                                    "event": property.name(),
-                                    "data": val,
-                                });
-                                let payload_str = serde_json::to_string(&payload)?;
-                                ws.send_message(payload_str.as_str().into()).await?;
-                            },
-                            Property::TimePos(val) => {
                                 let payload = json!({
                                     "event": property.name(),
                                     "data": val,
