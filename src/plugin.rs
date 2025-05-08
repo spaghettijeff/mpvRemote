@@ -5,10 +5,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use serde_json::{json, Value};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow, bail};
+use rand::{self, rng, Rng};
 
 use crate::mpv::{self, ObservedPropID, Event, Property, CmdHandle};
 use crate::websocket::WebSocketServer;
 
+  
 #[derive(Debug, Serialize, Deserialize)]
 struct WebEvent {
     event: String,
@@ -26,7 +28,8 @@ where
     loop {
         msg_buffer.clear();
         tokio::select! {
-            _time_sync_sleep = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+            // wait a random time between 9-11 seconds
+            _time_sync_sleep = tokio::time::sleep(std::time::Duration::from_millis(9_000 + rand::random_range(0..=2000))) => {
                 let time_pos = match cmd_handle.get_property::<f64>("time-pos") {
                     Ok(time) => time,
                     Err(_) => continue,
