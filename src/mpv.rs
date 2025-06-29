@@ -10,7 +10,7 @@ macro_rules! unwrap_or_continue {
     ($e:expr) => {
         match $e {
             Ok(val) => val,
-            Err(e) => { crate::logger::error!("{e}"); continue },
+            Err(e) => { crate::logger::error!("Error: {e}"); continue },
             
         }
     };

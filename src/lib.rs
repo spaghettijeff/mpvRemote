@@ -15,7 +15,7 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let config = match config::Config::load() {
         Ok(conf) => conf,
         Err(e) => {
-            logger::warning!("loading config: {e}. Using default options");
+            logger::warning!("failed to load config file, using default options ({e})");
             config::Config::default()
         },
     };
@@ -29,8 +29,8 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let rt = Runtime::new().unwrap();
     // webserver
     rt.spawn(async move {
-        match server::bind_and_listen((config.host, config.port), cmd_handle, subscriber).await {
-        Ok(_) => (),
+        match server::bind_and_listen((config.host.as_str(), config.port), cmd_handle, subscriber).await {
+        Ok(_) => logger::info!("server started at {}:{}", config.host, config.port),
         Err(e) => logger::error!("failed to start server: {e}"),
         }
     });
