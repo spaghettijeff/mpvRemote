@@ -11,13 +11,20 @@ use tokio::runtime::Runtime;
 
 #[no_mangle]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
-
-    let config = match config::Config::load() {
-        Ok(conf) => conf,
-        Err(e) => {
-            logger::warning!("failed to load config file, using default options ({e})");
-            config::Config::default()
+    let config = match config::Config::get_path() {
+        Ok(path) => {
+            match config::Config::load(&path) {
+                Ok(conf) => conf,
+                Err(e) => {
+                    logger::warning!("Failed to load config file. Using default options ( in {}: {e})", path.display());
+                    config::Config::default()
+                },
+            }
         },
+        Err(e) => {
+            logger::warning!("Config file not found. Using default options ({e})");
+            config::Config::default()
+        }
     };
     let handle = Handle::from_ptr(handle);
     let (mut event_handle, mut cmd_handle) = SplitHandle(handle);
