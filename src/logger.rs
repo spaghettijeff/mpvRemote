@@ -1,14 +1,21 @@
 use std::sync::Mutex;
 
-static GLOBAL_LOG: Mutex<Logger> = Mutex::new(Logger);
+static GLOBAL_LOG: Mutex<Logger> = Mutex::new(Logger(LogLevel::Debug));
 
-pub struct Logger;
+pub fn set_log_level(level: LogLevel) {
+    GLOBAL_LOG.lock().unwrap().0 = level;
+}
+
+pub struct Logger(LogLevel);
 impl Logger {
     fn log(&self, level: LogLevel, arg: &str) {
-        println!("[mpvRemote] {} - {}", level, arg)
+        if self.0 >= level {
+            println!("[mpvRemote] {} - {}", level, arg)
+        }
     }
 }
 
+#[derive(PartialEq, PartialOrd)]
 pub enum LogLevel {
     Error,
     Warn,

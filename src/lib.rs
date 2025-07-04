@@ -15,6 +15,7 @@ use tokio::runtime::Runtime;
 
 #[no_mangle]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
+    logger::set_log_level(logger::LogLevel::Debug);
     let config = match config::Config::get_path() {
         Ok(path) => {
             match config::Config::load(&path) {
