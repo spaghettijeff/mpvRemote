@@ -5,6 +5,10 @@ mod plugin;
 mod config;
 mod logger;
 
+use std::net::{IpAddr, Ipv4Addr};
+
+use local_ip_address::linux::local_ip;
+use server::Server;
 use mpv_client::{mpv_handle, Event, Handle};
 use mpv::{EventBroadcaster, SplitHandle};
 use tokio::runtime::Runtime;
@@ -36,10 +40,18 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let rt = Runtime::new().unwrap();
     // webserver
     rt.spawn(async move {
-        match server::bind_and_listen((config.host.as_str(), config.port), cmd_handle, subscriber).await {
-        Ok(_) => logger::info!("server started at {}:{}", config.host, config.port),
-        Err(e) => logger::error!("failed to start server: {e}"),
-        }
+        let server = match Server::bind((config.host.as_str(), config.port)).await {
+            Ok(s) => {
+                let ip = local_ip().or::<IpAddr>(Ok(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))).unwrap();
+                logger::info!("server started at {}:{}", ip, config.port);
+                s
+            },
+            Err(e) => {
+                logger::error!("failed to start server: {e}");
+                return
+            },
+        };
+        let _ = server.listen(cmd_handle, subscriber).await;
     });
     // mpv event loop
     loop {
