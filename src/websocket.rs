@@ -25,7 +25,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Debug> Debug for WebSocketServer<T> {
 impl<T: AsyncRead + AsyncWrite + Unpin> WebSocketServer<T> {
     pub async fn handshake(request: Request, mut stream: T) -> Result<WebSocketServer<T>> {
         let ws_key = request.headers.get("Sec-WebSocket-Key")
-            .ok_or(io::Error::new(io::ErrorKind::Other, "Sec-WebSocket-Key header not found in request"))?;
+            .ok_or(anyhow!("Sec-WebSocket-Key header not found in request"))?;
         let mut hasher = sha1::Sha1::new();
         hasher.update(ws_key.to_string() + WS_ACCEPT_CONSTANT);
         let ws_accept = base64::engine::general_purpose::STANDARD.encode(&hasher.finalize()[..]);
