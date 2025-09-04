@@ -1,5 +1,6 @@
-use crate::server::{Request, Response};
-use anyhow::{Result, anyhow, bail};
+use crate::server::{Method, Request, Response};
+use anyhow::{anyhow, bail, Ok, Result};
+use rand::random;
 use std::{fmt::Debug, io};
 use tokio::io::{copy, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Take};
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
@@ -11,6 +12,39 @@ const WS_ACCEPT_CONSTANT: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[allow(dead_code)]
 pub struct WebSocketClient<T: AsyncRead + AsyncWrite>(T);
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Debug> Debug for WebSocketClient<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WebSocketServer: {:?}", self.0)
+    }
+}
+
+impl <T: AsyncRead + AsyncWrite + Unpin> WebSocketClient<T> {
+    pub async fn upgrade(mut stream: T, path: String) -> Result<WebSocketClient<T>> {
+        let mut key_bytes: [u8; 2] = [0, 0];
+        NetworkEndian::write_u16(&mut key_bytes, random());
+        let key = base64::engine::general_purpose::STANDARD.encode(key_bytes);
+        let request = Request::new(path, Method::GET)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Key", &key)
+            .header("Sec-WebSocket-Version", "13");
+        let _ = stream.write(&request.bytes()).await?;
+        let response = Response::parse(&mut stream).await?;
+        if response.status != 101 {
+            return Err(anyhow!("Expected response 101: Switching Protocols, got {}", response.status))
+        }
+        let mut hasher = sha1::Sha1::new();
+        let ws_accept = response.headers.into_iter().find(|x: &(String, String)| -> bool { return x.0 == "Sec-WebSocket-Accept" })
+            .ok_or(anyhow!("Response header Sec-WebSocket-Accept not found"))?;
+        hasher.update(key + WS_ACCEPT_CONSTANT);
+        let ws_accept_expected = base64::engine::general_purpose::STANDARD.encode(&hasher.finalize()[..]);
+        if ws_accept_expected != ws_accept.1 {
+            return Err(anyhow!("Sec-WebSocket-Accept did not match expected value: \"{}\" found \"{}\"", ws_accept_expected, ws_accept.1));
+        }
+        Ok(WebSocketClient(stream))
+    }
+}
 
 #[allow(dead_code)]
 pub struct WebSocketServer<T: AsyncRead + AsyncWrite>(T);
@@ -328,8 +362,6 @@ impl<'a, T: AsyncRead + AsyncReadExt + Unpin> Frame<'a, T> {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::simplex;
-
     use super::*;
 
     #[tokio::test]
@@ -377,15 +409,32 @@ mod tests {
     async fn send_text_nomask() {
         let (client, server) = tokio::io::duplex(64);
         let mut ws_server = WebSocketServer(server);
-        let mut ws_client = WebSocketServer(client);
+        let mut ws_client = WebSocketServer(client); // both WebSocketServer allows testing of
+                                                     // transmition without needing handshake
         let th = tokio::spawn(async move {
-            ws_client.send_message("hello!".into()).await.unwrap();
+            ws_client.send_message("hello!".into()).await;
         });
         let mut msg = ws_server.get_message().await.unwrap();
         let mut s = String::new();
         msg.read_to_string(&mut s).await.unwrap();
         println!("{}", s);
         assert_eq!(s, "hello!");
-        let _ = th.await;
+        assert!(!th.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn handshake() {
+        let (client, mut server) = tokio::io::duplex(1024); // duplex has locking problems if
+                                                            // buffer is not large enough that tcp
+                                                            // stream does not have
+        let th_client = tokio::spawn(async move {
+            let mut ws_client = WebSocketClient::upgrade(client, "/".into()).await.unwrap();
+        });
+        let th_server = tokio::spawn(async move {
+            let request = Request::parse(&mut server).await.unwrap();
+            let ws_server = WebSocketServer::handshake(request, server).await.unwrap();
+        });
+        assert!(!th_client.await.is_err());
+        assert!(!th_server.await.is_err());
     }
 }

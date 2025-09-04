@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::path;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::fs;
 use anyhow::{Result, anyhow};
@@ -44,7 +44,30 @@ pub struct Request {
 }
 
 impl Request {
-    async fn parse<T>(stream: &mut T) -> Result<Request> 
+    pub fn new(path: String, method: Method) -> Request {
+        Request { 
+            method, 
+            path, 
+            ver: "HTTP/1.1".to_owned(), 
+            headers: HashMap::new(),
+        }
+    }
+
+    pub fn header(mut self, key: &str, val: &str) -> Request {
+        self.headers.insert(key.into(), val.into());
+        self
+    }
+
+    pub fn bytes(self) -> Vec<u8> {
+        let mut header = format!("{} {} {}\n", self.method, self.path ,self.ver).to_string();
+        self.headers.iter().for_each(|item| { 
+            header += format!("{}: {}\n", item.0, item.1).as_str();
+        });
+        header += "\r\n";
+        header.as_bytes().to_vec()
+    }
+
+    pub async fn parse<T>(stream: &mut T) -> Result<Request> 
     where 
     T: AsyncRead + Unpin,
     {
@@ -95,6 +118,23 @@ pub enum Method {
     PATCH,
 }
 
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            Self::GET => "GET",
+            Self::HEAD => "HEAD",
+            Self::POST => "POST",
+            Self::PUT => "PUT",
+            Self::DELETE => "DELETE",
+            Self::CONNECT => "CONNECT",
+            Self::OPTIONS => "OPTIONS",
+            Self::TRACE => "TRACE",
+            Self::PATCH => "PATCH",
+        };
+        f.write_str(str)
+    }
+}
+
 impl TryFrom<&str> for Method {
     type Error = anyhow::Error;
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
@@ -115,15 +155,15 @@ impl TryFrom<&str> for Method {
 }
 
 #[derive(Debug)]
-pub struct Response<'a> {
-    version: String,
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Option<&'a [u8]>,
+pub struct Response {
+    pub version: String,
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
 }
 
-impl<'a> Response<'a> {
-    pub fn new(version: &str, status: u16) -> Response<'a> {
+impl<'a> Response {
+    pub fn new(version: &str, status: u16) -> Response {
         Response {
             version: version.into(), 
             status, 
@@ -132,13 +172,13 @@ impl<'a> Response<'a> {
         }
     }
 
-    pub fn header(mut self, key: &str, value: &str) -> Response<'a> {
+    pub fn header(mut self, key: &str, value: &str) -> Response {
         self.headers.push((key.into(), value.into()));
         self
     }
 
-    pub fn body(mut self, body: &'a[u8]) -> Response {
-        self.body = Some(body);
+    pub fn body(mut self, body: &[u8]) -> Response {
+        self.body = Some(body.to_owned());
         self
     }
 
@@ -150,10 +190,51 @@ impl<'a> Response<'a> {
         header += "\r\n";
         let header = header.as_bytes();
         if let Some(body) = self.body {
-            [header, body].concat()
+            [header, &body].concat()
         } else {
             header.to_owned()
         }
+    }
+
+    pub async fn parse<T>(stream: &mut T) -> Result<Response> 
+    where 
+    T: AsyncRead + Unpin,
+    {
+        let mut lines = BufReader::new(stream);
+        let mut buf = String::new();
+        let first_line  = match lines.read_line(&mut buf).await {
+            Ok(0) => { return Err(anyhow!("unexpected EOF in http request")) },
+            Err(e) => { return Err(e.into()) },
+            Ok(_len) => &buf,
+        };
+        let (version, status) = match first_line.split_whitespace().collect::<Vec<&str>>()[..] {
+            [version, status] => (version.to_string(), status.parse::<u16>()?),
+            _ => return Err(anyhow!("invalid http request")),
+        };
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+        loop {
+            buf.clear();
+            let num_read = lines.read_line(&mut buf).await;
+            if buf == "\r\n" { break }
+            let (key, val) = match num_read {
+                Ok(0) => { return Err(anyhow!("unexpected EOF in http request")) },
+                Err(e) => { return Err(e.into()) },
+                Ok(_len) => buf.split_once(':').ok_or(anyhow!("invalid header in http request"))?,
+            };
+        headers.push((key.to_string(), val.trim().to_string()));
+        }
+        buf.clear();
+        let _ = lines.read_line(&mut buf).await?; //lfcr
+        buf.clear();
+        let body_len = lines.read_to_string(&mut buf).await?;
+        let body = if body_len == 0 { None } else { Some(buf.as_bytes().to_owned()) };
+        Ok(Response {
+            version,
+            status,
+            headers,
+            body
+        })
     }
 }
 
