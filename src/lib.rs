@@ -25,7 +25,7 @@ pub fn generate_qr_code_image(data: &str) -> Result<ImageBuffer<image::Rgba<u8>,
     Ok(image)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     logger::set_log_level(logger::LogLevel::Debug);
     let config = match config::Config::get_path() {
