@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use rand::{self, rng, Rng};
 
 use crate::mpv::{self, ObservedPropID, Event, Property, CmdHandle};
-use crate::qr_overlay::mpv_overlay;
+use crate::qr_overlay::{self, mpv_overlay};
 use crate::websocket::WebSocketServer;
 
   
@@ -235,6 +235,9 @@ where
             handle.command(["write-watch-later-config"]);
             handle.command(["stop"]);
         },
+        "toggle-qr" => {
+            qr_overlay::QR_OVERLAY.lock().unwrap().toggle_overlay(handle);
+        }
         _ => (),
     }
     Ok(())
