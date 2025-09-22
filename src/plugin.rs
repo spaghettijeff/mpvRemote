@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use rand::{self, rng, Rng};
 
 use crate::mpv::{self, ObservedPropID, Event, Property, CmdHandle};
+use crate::qr_overlay::mpv_overlay;
 use crate::websocket::WebSocketServer;
 
   
@@ -24,6 +25,7 @@ pub async fn handle_client_connection<T>(
 where
     T: AsyncRead + AsyncWrite + Unpin
 {
+    let mut show_overlay = false;
     let mut msg_buffer = String::new();
     loop {
         msg_buffer.clear();
@@ -105,7 +107,9 @@ where
                         let payload_str = serde_json::to_string(&payload)?;
                         ws.send_message(payload_str.as_str().into()).await?;
                     },
-                    _ => ()
+                    Event::PlaybackRestart => (),
+                    Event::Shutdown => unreachable!(),
+
                 };
             },
             client_msg = ws.get_message() => {
