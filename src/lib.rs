@@ -9,6 +9,7 @@ mod qr_overlay;
 use std::net::{IpAddr, Ipv4Addr};
 
 use local_ip_address::linux::local_ip;
+use qr_overlay::QR_OVERLAY;
 use server::Server;
 
 use mpv_client::{mpv_handle, Event, Handle};
@@ -48,8 +49,8 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
             Ok(s) => {
                 let ip = local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
                 logger::info!("server started at {}:{}", ip, config.port);
-                qr_overlay::QR_OVERLAY.lock().unwrap().set_image(&format!("{}:{}", ip, config.port));
-                qr_overlay::QR_OVERLAY.lock().unwrap().show_overlay(&mut cmd_handle);
+                QR_OVERLAY.lock().unwrap().initialize(&format!("{}:{}", ip, config.port), cmd_handle.clone());
+                QR_OVERLAY.lock().unwrap().toggle_overlay();
                 s
             },
             Err(e) => {

@@ -236,7 +236,7 @@ where
             handle.command(["stop"]);
         },
         "toggle-qr" => {
-            qr_overlay::QR_OVERLAY.lock().unwrap().toggle_overlay(handle);
+            qr_overlay::QR_OVERLAY.lock().unwrap().toggle_overlay();
         }
         _ => (),
     }

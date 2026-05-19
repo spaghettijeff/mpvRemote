@@ -5,8 +5,7 @@ use std::sync::Mutex;
 
 use crate::mpv::CmdHandle;
 
-pub static QR_OVERLAY: Mutex<mpv_overlay> = Mutex::new(mpv_overlay{ id: 0, visible: false, image: None });
-
+pub static QR_OVERLAY: Mutex<QrOverlay> = Mutex::new(QrOverlay::UnInitialized);
 
 pub struct mpv_overlay {
     id: u32,
@@ -55,6 +54,37 @@ impl mpv_overlay {
             self.show_overlay(handle)
         } else {
             self.hide_overlay(handle)
+        }
+    }
+}
+
+pub enum QrOverlay<'a> {
+    Initialized{
+        overlay: mpv_overlay,
+        handle: CmdHandle<'a>,
+    },
+    UnInitialized,
+}
+
+impl<'a> QrOverlay<'a> {
+    pub fn initialize(&mut self, data: &str, handle: CmdHandle<'a>) -> Result<(), anyhow::Error> {
+        let code = qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M)?;
+        let image = code.render::<image::Rgba<u8>>()
+            .min_dimensions(256, 256)
+            .build();
+        let overlay = mpv_overlay{
+            id: 0,
+            visible: false,
+            image: Some(image),
+        };
+        *self = QrOverlay::Initialized { overlay, handle };
+        Ok(())
+    }
+
+    pub fn toggle_overlay(&mut self) -> Result<(), anyhow::Error> {
+        match self {
+            QrOverlay::UnInitialized => Err(anyhow::anyhow!("overlay uninitialized")),
+            QrOverlay::Initialized { overlay, handle } => overlay.toggle_overlay(handle),
         }
     }
 }
