@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use rand::{self, rng, Rng};
 
 use crate::mpv::{self, ObservedPropID, Event, Property, CmdHandle};
-use crate::qr_overlay::{self, mpv_overlay};
+use crate::qr_overlay;
 use crate::websocket::WebSocketServer;
 
   
