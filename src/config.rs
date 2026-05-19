@@ -8,6 +8,9 @@ use dirs;
 pub struct Config {
     pub host: String,
     pub port: u16,
+    pub qr_show: bool,
+    pub qr_hide_after_sec: Option<u16>,
+    pub qr_hide_after_connect: bool,
 }
 
 impl Config {
@@ -15,6 +18,9 @@ impl Config {
         Config {
             host: "0.0.0.0".into(),
             port: 5585,
+            qr_show: true,
+            qr_hide_after_sec: Some(30),
+            qr_hide_after_connect: true,
         }
     }
     pub fn get_path() -> Result<path::PathBuf, io::Error> {
