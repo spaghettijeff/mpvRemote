@@ -2,7 +2,10 @@ use serde_json;
 use serde::Deserialize;
 use std::io;
 use std::path;
+use std::sync::LazyLock;
 use dirs;
+
+use crate::logger;
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -13,13 +16,32 @@ pub struct Config {
     pub qr_hide_after_connect: bool,
 }
 
+pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    let path = Config::get_path();
+    match path {
+        Err(e) => {
+            logger::warning!("Error loading config file({e}). Using default configuration");
+            Config::default()
+        }
+        Ok(path) => {
+            match Config::load(&path) {
+                Err(e) => {
+                    logger::warning!("Error loading config file({e}). Using default configuration");
+                    Config::default()
+                }
+                Ok(conf) => conf,
+            }
+        }
+    }
+});
+
 impl Config {
     pub fn default() -> Self {
         Config {
             host: "0.0.0.0".into(),
             port: 5585,
             qr_show: true,
-            qr_hide_after_sec: Some(30),
+            qr_hide_after_sec: None,
             qr_hide_after_connect: true,
         }
     }

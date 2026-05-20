@@ -8,6 +8,7 @@ mod qr_overlay;
 
 use std::net::{IpAddr, Ipv4Addr};
 
+use config::CONFIG;
 use local_ip_address::linux::local_ip;
 use qr_overlay::QR_OVERLAY;
 use server::Server;
@@ -19,21 +20,6 @@ use tokio::runtime::Runtime;
 #[unsafe(no_mangle)]
 extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     logger::set_log_level(logger::LogLevel::Debug);
-    let config = match config::Config::get_path() {
-        Ok(path) => {
-            match config::Config::load(&path) {
-                Ok(conf) => conf,
-                Err(e) => {
-                    logger::warning!("Failed to load config file. Using default options ( in {}: {e})", path.display());
-                    config::Config::default()
-                },
-            }
-        },
-        Err(e) => {
-            logger::warning!("Config file not found. Using default options ({e})");
-            config::Config::default()
-        }
-    };
     let handle = Handle::from_ptr(handle);
 
     let (mut event_handle, mut cmd_handle) = SplitHandle(handle);
@@ -46,10 +32,10 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     let overlay_cmd_handle = cmd_handle.clone();
     // webserver
     let _http_server_handle = rt.spawn(async move {
-        let server = match Server::bind((config.host.as_str(), config.port)).await {
+        let server = match Server::bind((CONFIG.host.as_str(), CONFIG.port)).await {
             Ok(s) => {
                 let ip = local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
-                logger::info!("server started at {}:{}", ip, config.port);
+                logger::info!("server started at {}:{}", ip, CONFIG.port);
                 s
             },
             Err(e) => {
@@ -61,11 +47,11 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     });
     let _overlay_handle = rt.spawn(async move {
         let ip = local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
-        let _ = QR_OVERLAY.lock().unwrap().initialize(&format!("{}:{}", ip, config.port), overlay_cmd_handle);
-        if config.qr_show {
+        let _ = QR_OVERLAY.lock().unwrap().initialize(&format!("{}:{}", ip, CONFIG.port), overlay_cmd_handle);
+        if CONFIG.qr_show {
             let _ = QR_OVERLAY.lock().unwrap().show_overlay();
         }
-        match config.qr_hide_after_sec {
+        match CONFIG.qr_hide_after_sec {
             None => (),
             Some(delay_sec) => {
                 tokio::time::sleep(tokio::time::Duration::from_secs(delay_sec as u64)).await;
