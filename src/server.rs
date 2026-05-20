@@ -8,7 +8,8 @@ use tokio::net::TcpListener;
 use tokio::fs;
 use anyhow::{Result, anyhow};
 use crate::logger::{debug, warning, error};
-use crate::{logger, plugin, websocket};
+use crate::qr_overlay::QR_OVERLAY;
+use crate::{config, logger, plugin, websocket};
 use crate::mpv::{CmdHandle, EventSubscriber};
 
 
@@ -298,6 +299,7 @@ impl Server {
                 tokio::spawn(async move {
                     let ws = websocket::WebSocketServer::handshake(request, stream).await?;
                     logger::debug!("new websocket connection: {ws:?}");
+                    let _ = QR_OVERLAY.lock().unwrap().hide_overlay();
                     plugin::handle_client_connection(ws, &mut cmd_handle, subscriber()).await?;
                     Ok::<(), anyhow::Error>(())
                 });
