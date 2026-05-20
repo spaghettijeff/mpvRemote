@@ -43,14 +43,13 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
     mpv::ObservedPropID::observe_all(&mut cmd_handle).unwrap();
 
     let rt = Runtime::new().unwrap();
+    let overlay_cmd_handle = cmd_handle.clone();
     // webserver
     let _http_server_handle = rt.spawn(async move {
         let server = match Server::bind((config.host.as_str(), config.port)).await {
             Ok(s) => {
                 let ip = local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
                 logger::info!("server started at {}:{}", ip, config.port);
-                QR_OVERLAY.lock().unwrap().initialize(&format!("{}:{}", ip, config.port), cmd_handle.clone());
-                QR_OVERLAY.lock().unwrap().toggle_overlay();
                 s
             },
             Err(e) => {
@@ -59,6 +58,21 @@ extern "C" fn mpv_open_cplugin(handle: *mut mpv_handle) -> std::os::raw::c_int {
             },
         };
         let _ = server.listen(cmd_handle, subscriber).await;
+    });
+    let _overlay_handle = rt.spawn(async move {
+        let ip = local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+        let _ = QR_OVERLAY.lock().unwrap().initialize(&format!("{}:{}", ip, config.port), overlay_cmd_handle);
+        if config.qr_show {
+            let _ = QR_OVERLAY.lock().unwrap().show_overlay();
+        }
+        match config.qr_hide_after_sec {
+            None => (),
+            Some(delay_sec) => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay_sec as u64)).await;
+                let _ = QR_OVERLAY.lock().unwrap().hide_overlay();
+            },
+        }
+
     });
     // mpv event loop
     loop {
