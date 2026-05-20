@@ -7,6 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpListener;
 use tokio::fs;
 use anyhow::{Result, anyhow};
+use crate::config::CONFIG;
 use crate::logger::{debug, warning, error};
 use crate::qr_overlay::QR_OVERLAY;
 use crate::{config, logger, plugin, websocket};
@@ -299,7 +300,9 @@ impl Server {
                 tokio::spawn(async move {
                     let ws = websocket::WebSocketServer::handshake(request, stream).await?;
                     logger::debug!("new websocket connection: {ws:?}");
-                    let _ = QR_OVERLAY.lock().unwrap().hide_overlay();
+                    if CONFIG.qr_hide_after_connect {
+                        let _ = QR_OVERLAY.lock().unwrap().hide_overlay();
+                    }
                     plugin::handle_client_connection(ws, &mut cmd_handle, subscriber()).await?;
                     Ok::<(), anyhow::Error>(())
                 });
